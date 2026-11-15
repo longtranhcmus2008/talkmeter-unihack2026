@@ -1,13 +1,5 @@
-// The seller: an API where one route costs USDC. Run it with `npm run server`.
-//
-// How one paid request goes:
-// 1. A request with no payment gets status 402 and a PAYMENT-REQUIRED header: how much, which token, to whom.
-// 2. The buyer signs that payment and asks again with a PAYMENT-SIGNATURE header.
-// 3. The middleware asks the facilitator to check the signature, then runs the route.
-// 4. The facilitator sends the transfer on chain and pays the gas. The answer goes out with a
-//    PAYMENT-RESPONSE header that holds the transaction hash.
 import express from "express";
-import { createPublicClient, http } from "viem";
+import { createPublicClient, http, keccak256, toHex } from "viem";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
@@ -15,66 +7,189 @@ import { FACILITATOR_URL, NET, address, fromUnits, price, stop, txLink } from ".
 
 const PORT = Number(process.env.PORT || 4021);
 const PAY_TO = address("PAY_TO");
-const PRICE = process.env.PRICE_USDC || "0.001";
+const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 
-// "exact" is the x402 scheme for a fixed price: the buyer pays exactly the amount asked.
-const payments = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL })).register(NET.id, new ExactEvmScheme());
+const PRICE_GAS = process.env.PRICE_USDC || "0.001";
+const PRICE_TRANSCRIBE = process.env.PRICE_TRANSCRIBE || "0.02";
+const PRICE_SUMMARY = process.env.PRICE_SUMMARY || "0.05";
 
-// Ask the facilitator what it supports before taking requests, so a wrong URL fails here and not on the first buyer.
+const GROQ_HOST = ["api", "groq", "com"].join(".");
+const GROQ_BASE = `https://${GROQ_HOST}/openai/v1`;
+const STT_URL = `${GROQ_BASE}/audio/transcriptions`;
+const LLM_URL = `${GROQ_BASE}/chat/completions`;
+
+if (!GROQ_API_KEY) {
+  stop("Thieu GROQ_API_KEY trong file .env.local");
+}
+
+const payments = new x402ResourceServer(
+  new HTTPFacilitatorClient({ url: FACILITATOR_URL })
+).register(NET.id, new ExactEvmScheme());
+
 try {
   await payments.initialize();
 } catch {
-  stop(`No facilitator answers at ${FACILITATOR_URL}. Check FACILITATOR_URL in .env.local.`);
+  stop(`Khong ket noi duoc Facilitator tai ${FACILITATOR_URL}`);
 }
-if (!payments.getSupportedKind(2, NET.id, "exact")) stop(`The facilitator at ${FACILITATOR_URL} does not handle ${NET.name} (${NET.id}).`);
+if (!payments.getSupportedKind(2, NET.id, "exact")) {
+  stop(`Facilitator khong ho tro mang ${NET.name}`);
+}
 
 payments.onAfterVerify(async ({ result }) => {
-  if (!result.isValid) console.log(`Refused a payment from ${result.payer || "an unknown wallet"}: ${result.invalidReason}`);
+  if (!result.isValid) console.log(`[Tu choi thanh toan] ${result.invalidReason}`);
 });
+
 payments.onAfterSettle(async ({ result, requirements }) => {
-  if (result.success) console.log(`Paid ${fromUnits(requirements.amount)} USDC by ${result.payer}: ${txLink(result.transaction)}`);
-  else console.log(`A payment from ${result.payer || "an unknown wallet"} did not settle: ${result.errorReason}`);
+  if (result.success) {
+    console.log(`[Da thu ${fromUnits(requirements.amount)} USDC] ${txLink(result.transaction)}`);
+  } else {
+    console.log(`[Loi settle] ${result.errorReason}`);
+  }
 });
 
 const app = express();
+app.use("/api/transcribe", express.raw({ type: "audio/*", limit: "10mb" }));
+app.use("/api/summary", express.json({ limit: "2mb" }));
 
-// One line per paid route: the method and path, and what a request costs. Routes not listed here stay free.
 app.use(
   paymentMiddleware(
     {
       "GET /api/gas": {
-        accepts: [{ scheme: "exact", network: NET.id, payTo: PAY_TO, price: price(PRICE) }],
-        description: `The latest block and gas price on ${NET.name}`,
+        accepts: [{ scheme: "exact", network: NET.id, payTo: PAY_TO, price: price(PRICE_GAS) }],
+        description: "Kiem tra gas Fuji",
+        mimeType: "application/json",
+      },
+      "POST /api/transcribe": {
+        accepts: [{ scheme: "exact", network: NET.id, payTo: PAY_TO, price: price(PRICE_TRANSCRIBE) }],
+        description: "Chuyen giong noi thanh van ban",
+        mimeType: "application/json",
+      },
+      "POST /api/summary": {
+        accepts: [{ scheme: "exact", network: NET.id, payTo: PAY_TO, price: price(PRICE_SUMMARY) }],
+        description: "Tom tat cuoc hop JSON",
         mimeType: "application/json",
       },
     },
-    payments,
-  ),
+    payments
+  )
 );
-
 app.get("/", (req, res) => {
-  res.json({ name: "x402 pay per request", network: NET.name, free: ["GET /"], paid: { "GET /api/gas": `${PRICE} USDC` } });
+  res.json({
+    name: "TalkMeter API",
+    network: NET.name,
+    paid: {
+      "POST /api/transcribe": `${PRICE_TRANSCRIBE} USDC`,
+      "POST /api/summary": `${PRICE_SUMMARY} USDC`,
+    },
+  });
 });
 
-// The paid route. It runs only after the facilitator has checked the payment, and the buyer is charged only
-// if it answers with success: an error status goes back as it is and the payment is never settled.
 const chain = createPublicClient({ chain: NET.chain, transport: http(NET.rpc) });
 app.get("/api/gas", async (req, res) => {
   try {
     const block = await chain.getBlock();
-    res.json({
-      network: NET.name,
-      block: Number(block.number),
-      baseFeeWei: String(block.baseFeePerGas ?? 0n),
-      time: new Date(Number(block.timestamp) * 1000).toISOString(),
-    });
+    res.json({ network: NET.name, block: Number(block.number) });
   } catch {
-    res.status(502).json({ error: `Could not read ${NET.name}. You were not charged.` });
+    res.status(502).json({ error: "Loi doc mang Fuji" });
+  }
+});
+
+app.post("/api/transcribe", async (req, res) => {
+  try {
+    if (!req.body || !Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: "Thieu du lieu am thanh" });
+    }
+    const contentType = req.headers["content-type"] || "audio/webm";
+    const ext = contentType.includes("wav") ? "wav" : contentType.includes("mp4") ? "mp4" : "webm";
+
+    const form = new FormData();
+    form.append("file", new Blob([req.body], { type: contentType }), `chunk.${ext}`);
+    form.append("model", "whisper-large-v3");
+    form.append("prompt", "TalkMeter, Avalanche, Fuji, USDC, x402, smart contract.");
+    form.append("response_format", "json");
+
+    const groqRes = await fetch(STT_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
+      body: form,
+    });
+
+    if (!groqRes.ok) {
+      console.error("[Loi Groq STT]:", await groqRes.text());
+      return res.status(502).json({ error: "Loi STT. Ban khong bi tru tien." });
+    }
+
+    const data = await groqRes.json();
+    const text = (data.text || "").trim();
+    const transcriptHash = keccak256(toHex(text));
+    res.json({ text, transcriptHash, bytesReceived: req.body.length });
+  } catch (err) {
+    console.error("[Loi /api/transcribe]:", err);
+    res.status(500).json({ error: "Loi server. Ban khong bi tru tien." });
+  }
+});
+
+app.post("/api/summary", async (req, res) => {
+  try {
+    const { transcript, meetingDate } = req.body || {};
+    if (!transcript || typeof transcript !== "string" || transcript.trim().length < 5) {
+      return res.status(400).json({ error: "Transcript qua ngan" });
+    }
+
+    const today = meetingDate || new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" });
+    const dayOfWeek = new Date().toLocaleDateString("vi-VN", { weekday: "long", timeZone: "Asia/Ho_Chi_Minh" });
+    const systemPrompt = [
+      "Bạn là trợ lý thư ký cuộc họp TalkMeter. Xuất ra duy nhất 1 đối tượng JSON hợp lệ, không bọc markdown.",
+      `Hôm nay là ${dayOfWeek}, ngày ${today}.`,
+      "Quy tắc trích xuất action_items:",
+      "- owner: Lấy tên người nói ở đầu câu (ví dụ 'Dat:', 'Dung:') hoặc tên người được giao việc. Nếu không rõ thì điền null.",
+      "- deadline: Tự tính toán và quy đổi các mốc thời gian tương đối (ví dụ 'ngày mai', 'thứ Sáu tuần này') sang định dạng YYYY-MM-DD dựa vào ngày hôm nay. Nếu không có hạn thì điền null.",
+      "- quote: Trích dẫn nguyên văn câu nói trong transcript.",
+      'Cấu trúc JSON bắt buộc: {"summary": "Tóm tắt 3-5 câu tiếng Việt", "decisions": ["..."], "action_items": [{"task": "...", "owner": "...", "deadline": "YYYY-MM-DD", "quote": "..."}]}'
+    ].join("\n");
+
+
+    const groqRes = await fetch(LLM_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "openai/gpt-oss-120b",
+        temperature: 0.1,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: transcript },
+        ],
+      }),
+    });
+
+    if (!groqRes.ok) {
+      console.error("[Loi Groq LLM]:", await groqRes.text());
+      return res.status(502).json({ error: "Loi LLM. Ban khong bi tru tien." });
+    }
+
+    const data = await groqRes.json();
+    const firstChoice = Array.isArray(data.choices) ? data.choices.at(0) : null;
+    const rawContent = firstChoice?.message?.content || "{}";
+
+    let parsedResult;
+    try {
+      parsedResult = JSON.parse(rawContent);
+    } catch {
+      return res.status(502).json({ error: "AI tra ve sai JSON" });
+    }
+
+    const summaryHash = keccak256(toHex(JSON.stringify(parsedResult)));
+    res.json({ ...parsedResult, summaryHash });
+  } catch (err) {
+    console.error("[Loi /api/summary]:", err);
+    res.status(500).json({ error: "Loi server. Ban khong bi tru tien." });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Selling GET /api/gas for ${PRICE} USDC on ${NET.name}, paid to ${PAY_TO}.`);
-  console.log(`Facilitator: ${FACILITATOR_URL}`);
-  console.log(`Listening on http://localhost:${PORT}`);
+  console.log(`TalkMeter Server chay tai http://localhost:${PORT} | Mang: ${NET.name}`);
 });

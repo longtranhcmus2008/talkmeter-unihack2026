@@ -1,5 +1,7 @@
 import express from "express";
-import { createPublicClient, http, keccak256, toHex } from "viem";
+import { createPublicClient, createWalletClient, http, keccak256, toHex } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { avalancheFuji } from "viem/chains";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
@@ -192,4 +194,69 @@ app.post("/api/summary", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`TalkMeter Server chay tai http://localhost:${PORT} | Mang: ${NET.name}`);
+});
+// --- CẤU HÌNH GHI BIÊN LAI ON-CHAIN (RECEIPT LOG) ---
+const RECEIPT_ABI = [
+  {
+    name: "log",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "sessionId", type: "bytes32" },
+      { name: "payer", type: "address" },
+      { name: "receiptHash", type: "bytes32" },
+      { name: "chunks", type: "uint32" },
+      { name: "paidUsdc", type: "uint256" },
+    ],
+    outputs: [],
+  },
+];
+
+// Route miễn phí để Server tự động ký và ghi biên lai cuối buổi họp lên Fuji
+app.post("/api/receipt", async (req, res) => {
+  try {
+    const { sessionId, payer, receiptHash, chunks, paidUsdc } = req.body;
+
+    // 1. Kiểm tra cấu hình ví Operator và địa chỉ Contract trong .env.local
+    if (!process.env.OPERATOR_PRIVATE_KEY || !process.env.RECEIPT_CONTRACT) {
+      return res.status(500).json({ error: "Server chưa cấu hình OPERATOR_PRIVATE_KEY hoặc RECEIPT_CONTRACT" });
+    }
+
+    // 2. Chuẩn hóa sessionId thành bytes32 (nếu frontend gửi chuỗi thường như "session-123")
+    const sessionBytes32 = sessionId?.startsWith("0x") && sessionId.length === 66
+      ? sessionId
+      : keccak256(toHex(String(sessionId || Date.now())));
+
+    // 3. Khởi tạo ví Operator để tự động ký giao dịch (không cần popup ví người dùng)
+    const operatorAccount = privateKeyToAccount(process.env.OPERATOR_PRIVATE_KEY);
+    const walletClient = createWalletClient({
+      account: operatorAccount,
+      chain: avalancheFuji,
+      transport: http(),
+    });
+
+    // 4. Gọi hàm log(...) trên Smart Contract ReceiptLog
+    const txHash = await walletClient.writeContract({
+      address: process.env.RECEIPT_CONTRACT,
+      abi: RECEIPT_ABI,
+      functionName: "log",
+      args: [
+        sessionBytes32,
+        payer,
+        receiptHash,
+        Number(chunks || 1),
+        BigInt(paidUsdc || 0),
+      ],
+    });
+
+    // 5. Trả về mã giao dịch và link kiểm chứng trên Snowtrace cho Frontend
+    res.json({
+      ok: true,
+      txHash,
+      explorerUrl: `https://snowtrace.io{txHash}`,
+    });
+  } catch (err) {
+    console.error("Lỗi ghi receipt on-chain:", err);
+    res.status(500).json({ error: err.shortMessage || err.message || "Ghi receipt thất bại" });
+  }
 });

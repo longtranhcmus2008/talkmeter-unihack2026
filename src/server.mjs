@@ -75,6 +75,7 @@ app.use(
     payments
   )
 );
+
 app.get("/", (req, res) => {
   res.json({
     name: "TalkMeter API",
@@ -150,7 +151,6 @@ app.post("/api/summary", async (req, res) => {
       'Cấu trúc JSON bắt buộc: {"summary": "Tóm tắt 3-5 câu tiếng Việt", "decisions": ["..."], "action_items": [{"task": "...", "owner": "...", "deadline": "YYYY-MM-DD", "quote": "..."}]}'
     ].join("\n");
 
-
     const groqRes = await fetch(LLM_URL, {
       method: "POST",
       headers: {
@@ -192,10 +192,6 @@ app.post("/api/summary", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`TalkMeter Server chay tai http://localhost:${PORT} | Mang: ${NET.name}`);
-});
-// --- CẤU HÌNH GHI BIÊN LAI ON-CHAIN (RECEIPT LOG) ---
 const RECEIPT_ABI = [
   {
     name: "log",
@@ -212,51 +208,50 @@ const RECEIPT_ABI = [
   },
 ];
 
-// Route miễn phí để Server tự động ký và ghi biên lai cuối buổi họp lên Fuji
-app.post("/api/receipt", async (req, res) => {
+app.post("/api/receipt", express.json(), async (req, res) => {
   try {
-    const { sessionId, payer, receiptHash, chunks, paidUsdc } = req.body;
-
-    // 1. Kiểm tra cấu hình ví Operator và địa chỉ Contract trong .env.local
-    if (!process.env.OPERATOR_PRIVATE_KEY || !process.env.RECEIPT_CONTRACT) {
-      return res.status(500).json({ error: "Server chưa cấu hình OPERATOR_PRIVATE_KEY hoặc RECEIPT_CONTRACT" });
+    const { sessionId, payer, chunks, paidUsdc } = req.body || {};
+    if (!sessionId || !payer || !Array.isArray(chunks)) {
+      return res.status(400).json({ error: "Thieu du lieu bien lai" });
     }
 
-    // 2. Chuẩn hóa sessionId thành bytes32 (nếu frontend gửi chuỗi thường như "session-123")
-    const sessionBytes32 = sessionId?.startsWith("0x") && sessionId.length === 66
-      ? sessionId
-      : keccak256(toHex(String(sessionId || Date.now())));
+    if (!process.env.OPERATOR_PRIVATE_KEY || !process.env.RECEIPT_CONTRACT) {
+      return res.status(500).json({ error: "Thieu OPERATOR_PRIVATE_KEY hoac RECEIPT_CONTRACT trong .env.local" });
+    }
 
-    // 3. Khởi tạo ví Operator để tự động ký giao dịch (không cần popup ví người dùng)
-    const operatorAccount = privateKeyToAccount(process.env.OPERATOR_PRIVATE_KEY);
-    const walletClient = createWalletClient({
-      account: operatorAccount,
-      chain: avalancheFuji,
-      transport: http(),
-    });
+    let h = keccak256(toHex(sessionId));
+    for (const c of chunks) {
+      h = keccak256(toHex(`${h}:${c.transcriptHash}:${c.txHash}`));
+    }
 
-    // 4. Gọi hàm log(...) trên Smart Contract ReceiptLog
+    const opKey = process.env.OPERATOR_PRIVATE_KEY.startsWith("0x")
+      ? process.env.OPERATOR_PRIVATE_KEY
+      : `0x${process.env.OPERATOR_PRIVATE_KEY}`;
+    const account = privateKeyToAccount(opKey);
+    const walletClient = createWalletClient({ account, chain: avalancheFuji, transport: http() });
+    const publicClient = createPublicClient({ chain: avalancheFuji, transport: http() });
+
+    const sessionBytes32 = keccak256(toHex(sessionId));
     const txHash = await walletClient.writeContract({
       address: process.env.RECEIPT_CONTRACT,
       abi: RECEIPT_ABI,
       functionName: "log",
-      args: [
-        sessionBytes32,
-        payer,
-        receiptHash,
-        Number(chunks || 1),
-        BigInt(paidUsdc || 0),
-      ],
+      args: [sessionBytes32, payer, h, chunks.length, BigInt(paidUsdc || 0)],
     });
 
-    // 5. Trả về mã giao dịch và link kiểm chứng trên Snowtrace cho Frontend
+    await publicClient.waitForTransactionReceipt({ hash: txHash });
+
     res.json({
-      ok: true,
+      receiptHash: h,
       txHash,
       explorerUrl: `https://snowtrace.io{txHash}`,
     });
   } catch (err) {
-    console.error("Lỗi ghi receipt on-chain:", err);
-    res.status(500).json({ error: err.shortMessage || err.message || "Ghi receipt thất bại" });
+    console.error("[Loi /api/receipt]:", err);
+    res.status(500).json({ error: err.message || "Loi ghi bien lai on-chain" });
   }
+});
+
+app.listen(PORT, () => {
+  console.log(`TalkMeter Server chay tai http://localhost:${PORT} | Mang: ${NET.name}`);
 });

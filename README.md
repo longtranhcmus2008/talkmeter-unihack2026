@@ -1,74 +1,121 @@
-# Pay per request with x402 on Avalanche
+# TalkMeter
 
-x402 uses the HTTP status 402 Payment Required to charge for one request. The server names a price, the caller signs a USDC payment and asks again, and a facilitator puts the transfer on chain. There is no account, no API key and no checkout page, so a program or an AI agent can buy from another program.
+**Trợ lý AI cho cuộc họp: họp bao nhiêu phút, trả bấy nhiêu phút.** Bật mic là đồng hồ bắt đầu tính tiền. Mỗi đoạn âm thanh là một lần trả 0.02 USDC qua x402 trên Avalanche. Chạm trần ngân sách thì mic tự tắt. Cuối phiên, TalkMeter tóm tắt cuộc họp, liệt kê việc cần làm kèm người phụ trách và hạn chót, rồi ghi một receipt (biên lai) của cả phiên lên chain.
 
-The three roles are three small files: a seller (`src/server.mjs`), a buyer (`src/pay.mjs`) and, if you want one, your own facilitator (`src/facilitator.mjs`). Out of the box the project uses a facilitator that already runs on Avalanche, on Fuji and on the C-Chain.
+Team1 Vietnam UniHack 2026, Topic 19.
 
-## Run it
-You need Node 22.9 or newer.
+![Giao diện TalkMeter khi đang ghi (dữ liệu minh họa)](docs/screenshot.jpg)
 
-1. Install the packages.
-2. Copy `.env.example` to `.env.local`.
-3. Run `npm run new-wallet` and paste the `BUYER_PRIVATE_KEY=...` line it prints into `.env.local`.
-4. Put a wallet address you own in `PAY_TO`, for example your Core address. This is the seller: the address that gets paid.
-5. Get test USDC for the buyer's address at the [Circle faucet](https://faucet.circle.com). Choose Avalanche Fuji. The buyer needs no AVAX.
-6. Start the seller. In a second terminal, run the buyer.
+## Dành cho ai
+
+Sinh viên và nhóm nhỏ họp ít và không đều. Họ không muốn trả 17–18 USD mỗi tháng cho Otter hay Fireflies, cần nghe được tiếng Việt, và không có thẻ quốc tế. Hai cuộc họp 30 phút mỗi tháng tốn 1.30 USDC.
+
+## Cái gì chạy thật, cái gì chưa
+
+| Tính năng | Trạng thái |
+|---|---|
+| Banner đồng ý ghi âm, ô chưa tích sẵn; không đồng ý thì mic không bật | Chạy |
+| Trần ngân sách mỗi phiên; mic tự tắt trước khi chạm trần, giữ sẵn phần cho bản tóm tắt | Chạy |
+| Thu mic, cắt đoạn 60 giây (hoặc 15 giây khi quay demo), mỗi đoạn là một file nghe lại được | Chạy |
+| Mỗi đoạn một lần thanh toán x402, có link Snowtrace riêng | Chạy (cần ví phiên có USDC test) |
+| Transcript tiếng Việt và tiếng Anh qua Whisper large-v3 (Groq) | Chạy (cần `GROQ_API_KEY`) |
+| STT lỗi thì không trừ tiền, tự thử lại một lần, sau đó có nút thử lại | Chạy |
+| Tóm tắt, quyết định, việc cần làm kèm câu gốc: một lần trả 0.05 USDC | Chạy |
+| Receipt on-chain cho cả phiên trong contract `ReceiptLog` | Chạy (cần ví operator và contract) |
+| Nút **Kiểm chứng trên chain**: trình duyệt tự tính lại hash và so với contract | Chạy |
+| Tải biên lai `.json` và kiểm chứng độc lập bằng `npm run verify-receipt` | Chạy |
+| Chấm điểm phỏng vấn, phỏng vấn thử, thanh toán theo giây, L1 riêng | Chưa làm |
+| Đăng nhập, lưu lịch sử, phân biệt người nói, bot tự vào Meet/Zoom | Không nằm trong phạm vi |
+
+**Giới hạn cần nói thẳng:** server tin danh sách mã giao dịch do trình duyệt gửi lên. Receipt chứng minh bản ghi không bị sửa, nhưng chưa chứng minh server đã tự đối chiếu từng giao dịch. Bản đầy đủ sẽ đọc sự kiện `Transfer` của USDC trước khi ghi receipt.
+
+## Trên chain (điền trước khi nộp)
+
+- Contract `ReceiptLog` trên Fuji: `0x...` ([Snowtrace](https://testnet.snowtrace.io/address/0x...))
+- Ba giao dịch x402 liên tiếp của một phiên: [phút 1](https://testnet.snowtrace.io/tx/0x...), [phút 2](https://testnet.snowtrace.io/tx/0x...), [phút 3](https://testnet.snowtrace.io/tx/0x...)
+- Giao dịch receipt của phiên đó: [receipt](https://testnet.snowtrace.io/tx/0x...)
+- Gas đo được cho một lần settle: `... gas × ... gwei = ... AVAX` (lấy từ Snowtrace)
+
+## Chạy thử
+
+Cần Node 22.9 trở lên và Chrome. Safari không ghi được `audio/webm`; app sẽ tự chuyển sang `audio/mp4` nếu trình duyệt hỗ trợ.
 
 ```bash
-npm install
-cp .env.example .env.local
-npm run new-wallet
-npm run server
-npm run pay
+npm run setup                  # cài thư viện cho server và web
+cp .env.example .env.local     # rồi điền PAY_TO và GROQ_API_KEY
+npm run new-wallet             # tạo ví operator, dán khóa vào OPERATOR_PRIVATE_KEY
+npm run deploy-receipt         # cần ít AVAX test trong ví operator; dán địa chỉ vào RECEIPT_CONTRACT
+npm run build && npm start     # mở http://localhost:4021
 ```
 
-The buyer prints what the seller asked for, then the answer it paid for and a link to the transaction (addresses and hash shortened here):
+Khi đang sửa giao diện, chạy `npm run server` và `npm run client` ở hai terminal rồi mở http://localhost:5173.
+
+Trong app: bấm vào ví ở góc trên, copy địa chỉ ví phiên và lấy USDC test tại [faucet Circle](https://faucet.circle.com) (chọn Avalanche Fuji). Ví phiên không cần AVAX.
+
+**Ba bước cho giám khảo:** (1) mở app, nạp 0.2 USDC test vào ví phiên; (2) tích ô đồng ý, chọn trần 0.10 và đoạn 15 giây, bấm Bắt đầu ghi và nói khoảng một phút; (3) bấm Tóm tắt và ghi receipt, rồi bấm Kiểm chứng trên chain.
+
+## Cách một đoạn được trả tiền
 
 ```
-402 Payment Required: 0.001 USDC to 0xEC33...cdAb on Avalanche Fuji.
-Signing with 0x6DC6...33D1 and asking again.
-Status 200
-{"network":"Avalanche Fuji","block":59352891,"baseFeeWei":"10","time":"2026-10-12T20:43:55.000Z"}
-Paid. Transaction: https://testnet.snowtrace.io/tx/0x...
+Trình duyệt ──POST /api/transcribe (đoạn âm thanh)──► Server
+            ◄── 402 Payment Required: 0.02 USDC, Fuji, PAY_TO ──
+Ví phiên ký transferWithAuthorization (EIP-3009). Không gửi giao dịch, không cần AVAX.
+            ──gửi lại kèm PAYMENT-SIGNATURE──► Server ──verify──► Facilitator
+                                               Server gọi Whisper. Lỗi thì trả lỗi, không ai bị trừ tiền.
+                                               Server ──settle──► Facilitator ──► USDC trên Avalanche
+            ◄── 200 + transcript + PAYMENT-RESPONSE (mã giao dịch) ──
 ```
 
-`npm run balance` prints the USDC of both wallets. Run it before and after.
+Trần ngân sách được giữ ở ba lớp: giao diện giữ chỗ trước cho từng đoạn và cho bản tóm tắt; thư viện x402 từ chối mọi yêu cầu đòi giá cao hơn giá đã niêm yết (`spendControls`); và ví phiên chỉ chứa đúng số USDC người dùng nạp vào.
 
-## How one payment goes
-1. The buyer asks for `GET /api/gas`. The seller answers 402 with a `PAYMENT-REQUIRED` header: 0.001 USDC, on Fuji, to `PAY_TO`.
-2. The buyer signs a message that allows exactly that transfer and asks again with a `PAYMENT-SIGNATURE` header. It sends no transaction.
-3. The seller asks the facilitator to check the signature, then runs the route.
-4. The facilitator sends the transfer to the USDC contract and pays the gas. The answer goes back with a `PAYMENT-RESPONSE` header that holds the transaction hash.
+## Receipt
 
-## Run your own facilitator
-The public facilitators are other people's services: free, with no promise to stay up, and they see every payment you take. To depend on nobody during a demo, run the one in this project.
+```
+h0 = keccak256(sessionId)
+hi = keccak256(h(i-1) ‖ keccak256(transcript_i) ‖ txHash_i)
+```
 
-1. Run `npm run new-wallet` again and put that key in `.env.local` as `FACILITATOR_PRIVATE_KEY`.
-2. Send that address a little test AVAX from the [Core faucet](https://core.app/tools/testnet-faucet). It pays the gas of every payment.
-3. Run `npm run facilitator` in its own terminal.
-4. Set `FACILITATOR_URL=http://localhost:4022` in `.env.local` and start the seller again.
+`hn` được ghi vào `ReceiptLog.receiptOf(keccak256(sessionId))`. Chỉ hash lên chain, nội dung cuộc họp thì không. Ai giữ transcript và danh sách giao dịch đều tính lại được `hn`; sửa một chữ ở bất kỳ đoạn nào cũng làm hash lệch. `npm test` kiểm tra điều này và kiểm tra trình duyệt với server tính ra cùng một hash.
 
-## Watch out
-- **What has been run.** On 13 October 2026 the whole payment ran on a local copy of Fuji (an anvil fork, so the real USDC contract) with the facilitator in this project: the buyer's USDC went down by 0.001 and the seller's went up by 0.001. On real Fuji, both public facilitators checked a payment from an empty wallet and refused it for having no USDC, which is the right answer. A payment settled by a public facilitator on real Fuji has not been run yet, because the Circle faucet needs a person to pass its captcha. The default facilitator's own statistics (`/api/stats`) counted 185 settled USDC payments on Fuji that day.
-- `NETWORK=mainnet` moves real USDC on the C-Chain. Stay on Fuji until you mean it.
-- The buyer's key is in `.env.local` and a program signs with it without asking you. Use a wallet made for this and keep little in it. `MAX_PRICE_USDC` is the most it pays for one request.
-- The route runs before the money moves: verify, then your code, then settle. If the route answers with an error, nobody is charged. Keep a paid route cheap to run, because a payment can still fail to settle after your code has done its work.
-- One signed payment works once. Sending the same `PAYMENT-SIGNATURE` again is refused, because USDC remembers the number inside it.
-- The price names the token contract, its name and its version (`price` in `src/networks.mjs`). The x402 library knows USDC on C-Chain mainnet but not on Fuji, so a plain `"$0.001"` fails on Fuji.
-- The versions of the `@x402` packages are pinned to 2.28 in `package.json`. The library changes quickly, so read its release notes before you raise them.
+Receipt được ghi ngay trong route `/api/summary`, vốn đã có trả tiền, nên không ai gọi được để đốt gas của ví operator miễn phí.
 
-## Where to look
-- `src/server.mjs` is the seller: the list of paid routes with their prices, and the route itself.
-- `src/pay.mjs` is the buyer: the spending limit, and a `fetch` that pays when it meets a 402.
-- `src/facilitator.mjs` is the optional facilitator: the three addresses `/supported`, `/verify` and `/settle`.
-- `src/networks.mjs` holds the two networks, the USDC contract on each and the helpers the three share.
-- `scripts/new-wallet.mjs` makes a key, and `scripts/balance.mjs` reads the USDC of the buyer and the seller.
+## Cấu trúc
 
-## Make it yours
-- Add a paid route: one more line in the list in `src/server.mjs`, with its own price.
-- Sell something worth paying for: an answer from an AI model, a row of data, a minute of a call.
-- Make the buyer an AI agent: give it `payingFetch` as its way to call paid APIs. `MAX_PRICE_USDC` is the limit it cannot argue its way past.
-- Move to your own L1: no public facilitator knows your chain, so run `src/facilitator.mjs` there and use a token that has `transferWithAuthorization` (EIP-3009).
-- Switch facilitator by changing `FACILITATOR_URL`. Two that work on Avalanche are in `.env.example`.
+| Đường dẫn | Nội dung |
+|---|---|
+| `src/server.mjs` | Seller: `/api/config` miễn phí, hai route trả phí `/api/transcribe` và `/api/summary`, ghi receipt, phục vụ `client/dist` |
+| `src/receipt.mjs` | Công thức hash receipt và ABI của `ReceiptLog` |
+| `src/networks.mjs` | Fuji và C-Chain, địa chỉ USDC, hàm `price()` |
+| `src/facilitator.mjs` | Facilitator tự chạy, dùng dự phòng khi facilitator công khai lỗi |
+| `contracts/ReceiptLog.sol` | Contract lưu một hash cho mỗi phiên |
+| `client/src/hooks/useMeeting.js` | Toàn bộ vòng lặp mic → x402 → transcript → tóm tắt → receipt |
+| `client/src/lib/x402Client.js` | Ví phiên trong trình duyệt và `fetch` tự trả tiền |
+| `client/src/components/` | Đồng hồ, thanh ngân sách, transcript, vé thanh toán, kết quả |
+| `scripts/` | Tạo ví, xem số dư, deploy và kiểm chứng receipt |
+| `docs/AUDIT.md` | Các lỗi đã tìm và sửa trong bản này |
 
-To learn the protocol in depth, Avalanche Builder Hub has a free course: [x402 Payment Infrastructure](https://build.avax.network/academy/blockchain/x402-payment-infrastructure).
+## Lệnh
+
+| Lệnh | Việc |
+|---|---|
+| `npm start` | Chạy server, phục vụ bản web đã build |
+| `npm run client` | Web ở chế độ dev (Vite, cổng 5173) |
+| `npm test` | Kiểm tra công thức receipt |
+| `npm run deploy-receipt` | Deploy `ReceiptLog` bằng ví operator |
+| `npm run verify-receipt -- <file.json>` | Kiểm chứng biên lai tải từ app với chain |
+| `npm run facilitator` | Facilitator dự phòng (đặt `FACILITATOR_URL=http://localhost:4022`) |
+| `npm run pay`, `npm run balance` | Thử x402 bằng dòng lệnh, xem số dư |
+
+## Vì sao on-chain, vì sao Avalanche, tiền từ đâu
+
+- **On-chain:** thẻ có phí cố định khoảng 0.3 USD, cao hơn giá một phút (0.02). x402 không cần tài khoản, API key hay trang thanh toán, nên một chương trình cũng tự trả được. Receipt cho phép kiểm chứng "trả đúng số phút đã dùng" mà không cần tin nhà cung cấp. Một cơ sở dữ liệu trả trước cũng làm được việc trừ tiền, nhưng người dùng phải tin công ty và không có biên lai kiểm chứng độc lập.
+- **Avalanche:** settle khoảng 1–2 giây, gas thấp hơn giá một phút, USDC gốc của Circle hỗ trợ EIP-3009. Một L1 riêng sẽ cho phép ghi receipt từng phút gần như miễn phí.
+- **Tiền:** giá bán 0.02 USD/phút, chi phí STT khoảng 0.003–0.006 USD/phút, cộng 0.05 cho mỗi bản tóm tắt. Không có token, không có yield.
+
+## Pháp lý tại Việt Nam
+
+Bản demo chạy trên Fuji với USDC thử nghiệm, không có giá trị thật. USDC không phải phương tiện thanh toán hợp pháp tại Việt Nam (Nghị định 52/2024) và không thuộc nhóm tài sản mã hóa được thí điểm theo Nghị quyết 05/2025. Bản thương mại sẽ phục vụ thị trường ngoài Việt Nam, hoặc thu bằng đồng Việt Nam qua trung gian được cấp phép và chỉ dùng chain để ghi biên lai.
+
+Ghi âm là xử lý dữ liệu cá nhân (Luật Bảo vệ dữ liệu cá nhân, hiệu lực 1/1/2026). TalkMeter xin đồng ý rõ ràng trước khi bật mic, báo rằng âm thanh được AI xử lý, không lưu file âm thanh trên server và chỉ đưa hash lên chain. Âm thanh vẫn được gửi tới API STT ở nước ngoài; hướng khắc phục là tự host model STT.
+
+Đây không phải tư vấn pháp lý.

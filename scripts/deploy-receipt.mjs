@@ -1,43 +1,34 @@
+// Compiles contracts/ReceiptLog.sol and deploys it with the operator wallet: `npm run deploy-receipt`.
+// The operator needs a little test AVAX (Core faucet) to pay the gas. Put the printed address in RECEIPT_CONTRACT.
 import fs from "node:fs";
 import solc from "solc";
-import { createWalletClient, createPublicClient, http } from "viem";
+import { createPublicClient, createWalletClient, http } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { avalancheFuji } from "viem/chains";
+import { NET, stop, txLink } from "../src/networks.mjs";
 
-// 1. Lấy Private Key ví Operator từ file .env.local
-const privateKey = process.env.OPERATOR_PRIVATE_KEY;
-if (!privateKey) {
-  console.error("Lỗi: Chưa cấu hình OPERATOR_PRIVATE_KEY trong .env.local");
-  process.exit(1);
-}
+const key = (process.env.OPERATOR_PRIVATE_KEY || "").replace(/^(?!0x)/, "0x");
+if (!/^0x[0-9a-fA-F]{64}$/.test(key)) stop("Đặt OPERATOR_PRIVATE_KEY trong .env.local (chạy npm run new-wallet để tạo).");
 
-// 2. Đọc code Solidity từ file contracts/ReceiptLog.sol
-const sourceCode = fs.readFileSync("contracts/ReceiptLog.sol", "utf8");
+const source = fs.readFileSync("contracts/ReceiptLog.sol", "utf8");
+const output = JSON.parse(
+  solc.compile(
+    JSON.stringify({
+      language: "Solidity",
+      sources: { "ReceiptLog.sol": { content: source } },
+      settings: { outputSelection: { "*": { "*": ["abi", "evm.bytecode"] } } },
+    })
+  )
+);
+const errors = (output.errors || []).filter((e) => e.severity === "error");
+if (errors.length) stop(errors.map((e) => e.formattedMessage).join("\n"));
+const { abi, evm } = output.contracts["ReceiptLog.sol"].ReceiptLog;
 
-// 3. Cấu hình và biên dịch code Solidity
-const input = {
-  language: "Solidity",
-  sources: { "ReceiptLog.sol": { content: sourceCode } },
-  settings: { outputSelection: { "*": { "*": ["abi", "evm.bytecode"] } } },
-};
-const output = JSON.parse(solc.compile(JSON.stringify(input)));
-const contractFile = output.contracts["ReceiptLog.sol"]["ReceiptLog"];
-const abi = contractFile.abi;
-const bytecode = `0x${contractFile.evm.bytecode.object}`;
+const account = privateKeyToAccount(key);
+const chain = createPublicClient({ chain: NET.chain, transport: http(NET.rpc) });
+const wallet = createWalletClient({ account, chain: NET.chain, transport: http(NET.rpc) });
 
-// 4. Kết nối mạng Avalanche Fuji bằng ví Operator
-const account = privateKeyToAccount(privateKey);
-const publicClient = createPublicClient({ chain: avalancheFuji, transport: http() });
-const walletClient = createWalletClient({ account, chain: avalancheFuji, transport: http() });
-
-console.log(`Đang deploy ReceiptLog từ ví Operator: ${account.address}...`);
-
-// 5. Gửi lệnh deploy và chờ xác nhận trên blockchain
-const hash = await walletClient.deployContract({ abi, bytecode });
-console.log(`Tx Hash: ${hash} - Đang chờ xác nhận...`);
-
-const receipt = await publicClient.waitForTransactionReceipt({ hash });
-console.log("==========================================");
-console.log("DEPLOY THÀNH CÔNG!");
+console.log(`Deploy ReceiptLog lên ${NET.name} từ ví operator ${account.address}...`);
+const hash = await wallet.deployContract({ abi, bytecode: `0x${evm.bytecode.object}` });
+const receipt = await chain.waitForTransactionReceipt({ hash });
+console.log(`Giao dịch: ${txLink(hash)}`);
 console.log(`RECEIPT_CONTRACT=${receipt.contractAddress}`);
-console.log("==========================================");

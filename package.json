@@ -1,18 +1,26 @@
 {
-  "name": "x402-pay-per-request",
+  "name": "talkmeter",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "An API that charges USDC per request with x402 on Avalanche, a client that pays, and a facilitator you can run yourself.",
+  "description": "TalkMeter: AI meeting copilot that charges per minute in USDC with x402 on Avalanche, with an on-chain session receipt.",
   "engines": {
     "node": ">=22.9"
   },
   "scripts": {
+    "setup": "npm install && npm --prefix client install",
     "server": "node --env-file-if-exists=.env.local src/server.mjs",
+    "start": "node --env-file-if-exists=.env.local src/server.mjs",
+    "client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "test": "node --test test/",
     "pay": "node --env-file-if-exists=.env.local src/pay.mjs",
     "facilitator": "node --env-file-if-exists=.env.local src/facilitator.mjs",
     "new-wallet": "node scripts/new-wallet.mjs",
-    "balance": "node --env-file-if-exists=.env.local scripts/balance.mjs"
+    "balance": "node --env-file-if-exists=.env.local scripts/balance.mjs",
+    "deploy-receipt": "node --env-file-if-exists=.env.local scripts/deploy-receipt.mjs",
+    "verify-receipt": "node --env-file-if-exists=.env.local scripts/verify-receipt.mjs",
+    "test-ai": "node --env-file-if-exists=.env.local scripts/test-ai.mjs"
   },
   "dependencies": {
     "@x402/core": "~2.28.0",

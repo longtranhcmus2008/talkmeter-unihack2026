@@ -1,257 +1,267 @@
+// TalkMeter seller: two paid routes (one minute of transcript, one meeting summary) and the on-chain receipt.
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
-import { createPublicClient, createWalletClient, http, keccak256, toHex } from "viem";
+import { createPublicClient, createWalletClient, http, isAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { avalancheFuji } from "viem/chains";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
-import { FACILITATOR_URL, NET, address, fromUnits, price, stop, txLink } from "./networks.mjs";
+import { FACILITATOR_URL, NET, address, fromUnits, price, stop, toUnits, txLink } from "./networks.mjs";
+import { RECEIPT_ABI, receiptHash, sessionKey, textHash } from "./receipt.mjs";
 
 const PORT = Number(process.env.PORT || 4021);
 const PAY_TO = address("PAY_TO");
 const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
-
-const PRICE_GAS = process.env.PRICE_USDC || "0.001";
 const PRICE_TRANSCRIBE = process.env.PRICE_TRANSCRIBE || "0.02";
 const PRICE_SUMMARY = process.env.PRICE_SUMMARY || "0.05";
+const PRICE_GAS = process.env.PRICE_USDC || "0.001";
+const STT_PROMPT = process.env.STT_PROMPT || "TalkMeter, Avalanche, Fuji, USDC, x402, smart contract.";
+const LLM_MODEL = process.env.LLM_MODEL || "openai/gpt-oss-120b";
+const RECEIPT_CONTRACT = process.env.RECEIPT_CONTRACT || "";
 
-const GROQ_HOST = ["api", "groq", "com"].join(".");
-const GROQ_BASE = `https://${GROQ_HOST}/openai/v1`;
-const STT_URL = `${GROQ_BASE}/audio/transcriptions`;
-const LLM_URL = `${GROQ_BASE}/chat/completions`;
+const GROQ_BASE = "https://api.groq.com/openai/v1";
 
-if (!GROQ_API_KEY) {
-  stop("Thieu GROQ_API_KEY trong file .env.local");
-}
+if (!GROQ_API_KEY) stop("Thiếu GROQ_API_KEY trong .env.local");
+if (RECEIPT_CONTRACT && !isAddress(RECEIPT_CONTRACT)) stop("RECEIPT_CONTRACT không phải địa chỉ hợp lệ.");
 
-const payments = new x402ResourceServer(
-  new HTTPFacilitatorClient({ url: FACILITATOR_URL })
-).register(NET.id, new ExactEvmScheme());
-
+// ---------- x402 ----------
+const payments = new x402ResourceServer(new HTTPFacilitatorClient({ url: FACILITATOR_URL })).register(
+  NET.id,
+  new ExactEvmScheme()
+);
 try {
   await payments.initialize();
 } catch {
-  stop(`Khong ket noi duoc Facilitator tai ${FACILITATOR_URL}`);
+  stop(`Không kết nối được facilitator tại ${FACILITATOR_URL}. Đổi FACILITATOR_URL hoặc chạy npm run facilitator.`);
 }
-if (!payments.getSupportedKind(2, NET.id, "exact")) {
-  stop(`Facilitator khong ho tro mang ${NET.name}`);
-}
+if (!payments.getSupportedKind(2, NET.id, "exact")) stop(`Facilitator không hỗ trợ mạng ${NET.name}`);
 
 payments.onAfterVerify(async ({ result }) => {
-  if (!result.isValid) console.log(`[Tu choi thanh toan] ${result.invalidReason}`);
+  if (!result.isValid) console.log(`[Từ chối thanh toán] ${result.invalidReason}`);
 });
-
 payments.onAfterSettle(async ({ result, requirements }) => {
-  if (result.success) {
-    console.log(`[Da thu ${fromUnits(requirements.amount)} USDC] ${txLink(result.transaction)}`);
-  } else {
-    console.log(`[Loi settle] ${result.errorReason}`);
-  }
+  if (result.success) console.log(`[Đã thu ${fromUnits(requirements.amount)} USDC] ${txLink(result.transaction)}`);
+  else console.log(`[Lỗi settle] ${result.errorReason}`);
 });
 
+const paid = (usdc, description) => ({
+  accepts: [{ scheme: "exact", network: NET.id, payTo: PAY_TO, price: price(usdc) }],
+  description,
+  mimeType: "application/json",
+});
+
+// ---------- chain ----------
+const chain = createPublicClient({ chain: NET.chain, transport: http(NET.rpc) });
+const opKey = (process.env.OPERATOR_PRIVATE_KEY || "").replace(/^(?!0x)/, "0x");
+const operator = /^0x[0-9a-fA-F]{64}$/.test(opKey)
+  ? createWalletClient({
+      account: privateKeyToAccount(opKey),
+      chain: NET.chain,
+      transport: http(NET.rpc),
+    })
+  : null;
+const receiptsEnabled = Boolean(operator && RECEIPT_CONTRACT);
+if (!receiptsEnabled) console.warn("Chưa có OPERATOR_PRIVATE_KEY hoặc RECEIPT_CONTRACT: tóm tắt vẫn chạy, nhưng không ghi receipt on-chain.");
+
+// Receipts that failed to write after their summary was paid. Only these can be retried for free.
+// shortcut: in-memory, lost on restart; fine for a single demo server.
+const pendingReceipts = new Map();
+
+async function writeReceipt({ sessionId, payer, chunks }) {
+  const key = sessionKey(sessionId);
+  const hash = receiptHash(sessionId, chunks);
+  const existing = await chain.readContract({ address: RECEIPT_CONTRACT, abi: RECEIPT_ABI, functionName: "receiptOf", args: [key] });
+  if (existing !== `0x${"0".repeat(64)}`) {
+    if (existing.toLowerCase() !== hash.toLowerCase()) throw new Error("Phiên này đã có receipt khác trên chain.");
+    return { receiptHash: hash, txHash: null, explorerUrl: null, alreadyLogged: true };
+  }
+  const paidUnits = BigInt(toUnits(PRICE_TRANSCRIBE)) * BigInt(chunks.length) + BigInt(toUnits(PRICE_SUMMARY));
+  const txHash = await operator.writeContract({
+    address: RECEIPT_CONTRACT,
+    abi: RECEIPT_ABI,
+    functionName: "log",
+    args: [key, payer, hash, chunks.length, paidUnits],
+  });
+  await chain.waitForTransactionReceipt({ hash: txHash });
+  return { receiptHash: hash, txHash, explorerUrl: txLink(txHash), paidUsdc: fromUnits(paidUnits) };
+}
+
+const HEX32 = /^0x[0-9a-fA-F]{64}$/;
+function readReceiptInput(body) {
+  const { sessionId, payer, chunks } = body || {};
+  if (typeof sessionId !== "string" || sessionId.length < 4 || sessionId.length > 100) return null;
+  if (!isAddress(payer || "")) return null;
+  if (!Array.isArray(chunks) || chunks.length > 2000) return null;
+  const clean = chunks
+    .filter((c) => Number.isInteger(c?.index) && HEX32.test(c?.transcriptHash) && HEX32.test(c?.txHash))
+    .map(({ index, transcriptHash, txHash }) => ({ index, transcriptHash, txHash }));
+  return { sessionId, payer, chunks: clean };
+}
+
+// ---------- app ----------
 const app = express();
 app.use("/api/transcribe", express.raw({ type: "audio/*", limit: "10mb" }));
-app.use("/api/summary", express.json({ limit: "2mb" }));
+app.use("/api", express.json({ limit: "2mb" }));
 
 app.use(
   paymentMiddleware(
     {
-      "GET /api/gas": {
-        accepts: [{ scheme: "exact", network: NET.id, payTo: PAY_TO, price: price(PRICE_GAS) }],
-        description: "Kiem tra gas Fuji",
-        mimeType: "application/json",
-      },
-      "POST /api/transcribe": {
-        accepts: [{ scheme: "exact", network: NET.id, payTo: PAY_TO, price: price(PRICE_TRANSCRIBE) }],
-        description: "Chuyen giong noi thanh van ban",
-        mimeType: "application/json",
-      },
-      "POST /api/summary": {
-        accepts: [{ scheme: "exact", network: NET.id, payTo: PAY_TO, price: price(PRICE_SUMMARY) }],
-        description: "Tom tat cuoc hop JSON",
-        mimeType: "application/json",
-      },
+      "GET /api/gas": paid(PRICE_GAS, "Kiểm tra gas Fuji"),
+      "POST /api/transcribe": paid(PRICE_TRANSCRIBE, "Một đoạn transcript"),
+      "POST /api/summary": paid(PRICE_SUMMARY, "Tóm tắt và action items của cả phiên"),
     },
     payments
   )
 );
 
-app.get("/", (req, res) => {
+// Free: what the browser needs to know before it pays anything.
+app.get("/api/config", (req, res) => {
   res.json({
-    name: "TalkMeter API",
-    network: NET.name,
-    paid: {
-      "POST /api/transcribe": `${PRICE_TRANSCRIBE} USDC`,
-      "POST /api/summary": `${PRICE_SUMMARY} USDC`,
-    },
+    network: { key: NET.key, name: NET.name, id: NET.id, chainId: NET.chain.id, usdc: NET.usdc, explorer: NET.explorer },
+    prices: { transcribe: PRICE_TRANSCRIBE, summary: PRICE_SUMMARY },
+    payTo: PAY_TO,
+    receiptContract: receiptsEnabled ? RECEIPT_CONTRACT : null,
   });
 });
 
-const chain = createPublicClient({ chain: NET.chain, transport: http(NET.rpc) });
 app.get("/api/gas", async (req, res) => {
   try {
     const block = await chain.getBlock();
-    res.json({ network: NET.name, block: Number(block.number) });
+    res.json({ network: NET.name, block: Number(block.number), baseFeeWei: String(block.baseFeePerGas ?? 0) });
   } catch {
-    res.status(502).json({ error: "Loi doc mang Fuji" });
+    res.status(502).json({ error: `Không đọc được mạng ${NET.name}` });
   }
 });
 
 app.post("/api/transcribe", async (req, res) => {
   try {
-    if (!req.body || !Buffer.isBuffer(req.body) || req.body.length === 0) {
-      return res.status(400).json({ error: "Thieu du lieu am thanh" });
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: "Thiếu dữ liệu âm thanh. Bạn không bị trừ tiền." });
     }
     const contentType = req.headers["content-type"] || "audio/webm";
-    const ext = contentType.includes("wav") ? "wav" : contentType.includes("mp4") ? "mp4" : "webm";
+    const ext = contentType.includes("wav") ? "wav" : contentType.includes("mp4") ? "mp4" : contentType.includes("ogg") ? "ogg" : "webm";
 
     const form = new FormData();
     form.append("file", new Blob([req.body], { type: contentType }), `chunk.${ext}`);
     form.append("model", "whisper-large-v3");
-    form.append("prompt", "TalkMeter, Avalanche, Fuji, USDC, x402, smart contract.");
+    form.append("prompt", STT_PROMPT);
     form.append("response_format", "json");
 
-    const groqRes = await fetch(STT_URL, {
+    const r = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
       body: form,
     });
-
-    if (!groqRes.ok) {
-      console.error("[Loi Groq STT]:", await groqRes.text());
-      return res.status(502).json({ error: "Loi STT. Ban khong bi tru tien." });
+    if (!r.ok) {
+      console.error("[Lỗi Groq STT]", r.status, await r.text());
+      return res.status(502).json({ error: r.status === 429 ? "STT đang quá tải (429). Bạn không bị trừ tiền." : "STT lỗi. Bạn không bị trừ tiền." });
     }
-
-    const data = await groqRes.json();
-    const text = (data.text || "").trim();
-    const transcriptHash = keccak256(toHex(text));
-    res.json({ text, transcriptHash, bytesReceived: req.body.length });
+    const text = ((await r.json()).text || "").trim();
+    // The audio is not stored: received, sent to STT, dropped.
+    res.json({ text, transcriptHash: textHash(text) });
   } catch (err) {
-    console.error("[Loi /api/transcribe]:", err);
-    res.status(500).json({ error: "Loi server. Ban khong bi tru tien." });
+    console.error("[Lỗi /api/transcribe]", err);
+    res.status(500).json({ error: "Lỗi server. Bạn không bị trừ tiền." });
   }
 });
 
 app.post("/api/summary", async (req, res) => {
-  try {
-    const { transcript, meetingDate } = req.body || {};
-    if (!transcript || typeof transcript !== "string" || transcript.trim().length < 5) {
-      return res.status(400).json({ error: "Transcript qua ngan" });
-    }
+  const { transcript } = req.body || {};
+  if (typeof transcript !== "string" || transcript.trim().length < 5) {
+    return res.status(400).json({ error: "Transcript quá ngắn để tóm tắt. Bạn không bị trừ tiền." });
+  }
+  const receiptInput = readReceiptInput(req.body);
+  if (receiptsEnabled && !receiptInput) {
+    return res.status(400).json({ error: "Thiếu sessionId, ví hoặc danh sách giao dịch. Bạn không bị trừ tiền." });
+  }
 
-    const today = meetingDate || new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Ho_Chi_Minh" });
-    const dayOfWeek = new Date().toLocaleDateString("vi-VN", { weekday: "long", timeZone: "Asia/Ho_Chi_Minh" });
-    const systemPrompt = [
-      "Bạn là trợ lý thư ký cuộc họp TalkMeter. Xuất ra duy nhất 1 đối tượng JSON hợp lệ, không bọc markdown.",
-      `Hôm nay là ${dayOfWeek}, ngày ${today}.`,
-      "Quy tắc trích xuất action_items:",
-      "- owner: Lấy tên người nói ở đầu câu (ví dụ 'Dat:', 'Dung:') hoặc tên người được giao việc. Nếu không rõ thì điền null.",
-      "- deadline: Tự tính toán và quy đổi các mốc thời gian tương đối (ví dụ 'ngày mai', 'thứ Sáu tuần này') sang định dạng YYYY-MM-DD dựa vào ngày hôm nay. Nếu không có hạn thì điền null.",
-      "- quote: Trích dẫn nguyên văn câu nói trong transcript.",
-      'Cấu trúc JSON bắt buộc: {"summary": "Tóm tắt 3-5 câu tiếng Việt", "decisions": ["..."], "action_items": [{"task": "...", "owner": "...", "deadline": "YYYY-MM-DD", "quote": "..."}]}'
+  try {
+    const tz = "Asia/Ho_Chi_Minh";
+    const today = new Date().toLocaleDateString("sv-SE", { timeZone: tz });
+    const weekday = new Date().toLocaleDateString("vi-VN", { weekday: "long", timeZone: tz });
+    const system = [
+      "Bạn là thư ký cuộc họp của TalkMeter. Chỉ trả về một đối tượng JSON hợp lệ, không bọc markdown.",
+      `Hôm nay là ${weekday}, ngày ${today}.`,
+      "Chỉ dùng thông tin có trong transcript. Không đoán.",
+      "action_items: owner là tên người được giao việc, không rõ thì null. deadline đổi mốc tương đối ('thứ Sáu tuần này', 'ngày mai') thành YYYY-MM-DD theo ngày hôm nay, không có thì null. quote là câu gốc trong transcript.",
+      'Khuôn bắt buộc: {"summary":"3-5 câu, cùng ngôn ngữ với cuộc họp","decisions":["..."],"action_items":[{"task":"...","owner":null,"deadline":null,"quote":"..."}]}',
     ].join("\n");
 
-    const groqRes = await fetch(LLM_URL, {
+    const r = await fetch(`${GROQ_BASE}/chat/completions`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "openai/gpt-oss-120b",
+        model: LLM_MODEL,
         temperature: 0.1,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: system },
           { role: "user", content: transcript },
         ],
       }),
     });
-
-    if (!groqRes.ok) {
-      console.error("[Loi Groq LLM]:", await groqRes.text());
-      return res.status(502).json({ error: "Loi LLM. Ban khong bi tru tien." });
+    if (!r.ok) {
+      console.error("[Lỗi Groq LLM]", r.status, await r.text());
+      return res.status(502).json({ error: "AI tóm tắt lỗi. Bạn không bị trừ tiền." });
     }
-
-    const data = await groqRes.json();
-    const firstChoice = Array.isArray(data.choices) ? data.choices.at(0) : null;
-    const rawContent = firstChoice?.message?.content || "{}";
-
-    let parsedResult;
+    let result;
     try {
-      parsedResult = JSON.parse(rawContent);
+      result = JSON.parse((await r.json()).choices?.[0]?.message?.content || "");
     } catch {
-      return res.status(502).json({ error: "AI tra ve sai JSON" });
+      return res.status(502).json({ error: "AI trả về sai định dạng. Bạn không bị trừ tiền." });
     }
+    const summary = {
+      summary: String(result.summary || ""),
+      decisions: Array.isArray(result.decisions) ? result.decisions.map(String) : [],
+      action_items: Array.isArray(result.action_items) ? result.action_items : [],
+    };
 
-    const summaryHash = keccak256(toHex(JSON.stringify(parsedResult)));
-    res.json({ ...parsedResult, summaryHash });
+    // The summary is already paid for (verified before this route runs), so the receipt write cannot be abused for free.
+    let receipt = null;
+    let receiptError = null;
+    if (receiptsEnabled) {
+      try {
+        receipt = await writeReceipt(receiptInput);
+      } catch (err) {
+        console.error("[Lỗi ghi receipt]", err);
+        pendingReceipts.set(receiptInput.sessionId, receiptInput);
+        receiptError = "Chưa ghi được receipt on-chain. Bấm thử lại, không mất thêm phí.";
+      }
+    } else {
+      receiptError = "Server chưa cấu hình ReceiptLog (OPERATOR_PRIVATE_KEY, RECEIPT_CONTRACT).";
+    }
+    res.json({ ...summary, receipt, receiptError });
   } catch (err) {
-    console.error("[Loi /api/summary]:", err);
-    res.status(500).json({ error: "Loi server. Ban khong bi tru tien." });
+    console.error("[Lỗi /api/summary]", err);
+    res.status(500).json({ error: "Lỗi server. Bạn không bị trừ tiền." });
   }
 });
 
-const RECEIPT_ABI = [
-  {
-    name: "log",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "sessionId", type: "bytes32" },
-      { name: "payer", type: "address" },
-      { name: "receiptHash", type: "bytes32" },
-      { name: "chunks", type: "uint32" },
-      { name: "paidUsdc", type: "uint256" },
-    ],
-    outputs: [],
-  },
-];
-
-app.post("/api/receipt", express.json(), async (req, res) => {
+app.post("/api/receipt/retry", async (req, res) => {
+  const input = pendingReceipts.get(req.body?.sessionId);
+  if (!input) return res.status(404).json({ error: "Không có receipt nào đang chờ cho phiên này." });
   try {
-    const { sessionId, payer, chunks, paidUsdc } = req.body || {};
-    if (!sessionId || !payer || !Array.isArray(chunks)) {
-      return res.status(400).json({ error: "Thieu du lieu bien lai" });
-    }
-
-    if (!process.env.OPERATOR_PRIVATE_KEY || !process.env.RECEIPT_CONTRACT) {
-      return res.status(500).json({ error: "Thieu OPERATOR_PRIVATE_KEY hoac RECEIPT_CONTRACT trong .env.local" });
-    }
-
-    let h = keccak256(toHex(sessionId));
-    for (const c of chunks) {
-      h = keccak256(toHex(`${h}:${c.transcriptHash}:${c.txHash}`));
-    }
-
-    const opKey = process.env.OPERATOR_PRIVATE_KEY.startsWith("0x")
-      ? process.env.OPERATOR_PRIVATE_KEY
-      : `0x${process.env.OPERATOR_PRIVATE_KEY}`;
-    const account = privateKeyToAccount(opKey);
-    const walletClient = createWalletClient({ account, chain: avalancheFuji, transport: http() });
-    const publicClient = createPublicClient({ chain: avalancheFuji, transport: http() });
-
-    const sessionBytes32 = keccak256(toHex(sessionId));
-    const txHash = await walletClient.writeContract({
-      address: process.env.RECEIPT_CONTRACT,
-      abi: RECEIPT_ABI,
-      functionName: "log",
-      args: [sessionBytes32, payer, h, chunks.length, BigInt(paidUsdc || 0)],
-    });
-
-    await publicClient.waitForTransactionReceipt({ hash: txHash });
-
-    res.json({
-      receiptHash: h,
-      txHash,
-      explorerUrl: `https://snowtrace.io{txHash}`,
-    });
+    const receipt = await writeReceipt(input);
+    pendingReceipts.delete(input.sessionId);
+    res.json({ receipt });
   } catch (err) {
-    console.error("[Loi /api/receipt]:", err);
-    res.status(500).json({ error: err.message || "Loi ghi bien lai on-chain" });
+    console.error("[Lỗi thử lại receipt]", err);
+    res.status(502).json({ error: "Vẫn chưa ghi được receipt. Kiểm tra AVAX của ví operator." });
   }
 });
+
+app.use("/api", (req, res) => res.status(404).json({ error: "Không có route này." }));
+
+// The built web app, served from the same origin so payment headers need no CORS.
+const dist = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "client", "dist");
+if (fs.existsSync(dist)) {
+  app.use(express.static(dist));
+  app.use((req, res, next) => (req.method === "GET" ? res.sendFile(path.join(dist, "index.html")) : next()));
+}
 
 app.listen(PORT, () => {
-  console.log(`TalkMeter Server chay tai http://localhost:${PORT} | Mang: ${NET.name}`);
+  console.log(`TalkMeter chạy tại http://localhost:${PORT} trên ${NET.name}`);
+  console.log(fs.existsSync(dist) ? "Đang phục vụ giao diện từ client/dist." : "Chưa có client/dist: chạy npm run build, hoặc npm run client cho bản dev.");
 });

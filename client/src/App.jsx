@@ -1,389 +1,305 @@
-import { useState, useEffect, useRef } from "react";
-import {
-  getSessionWallet,
-  resetSessionWallet,
-  getUsdcBalance,
-  createPayingFetch,
-} from "./x402Client";
+import { useCallback, useEffect, useState } from "react";
+import { loadSessionWallet, newSessionWallet, publicClientFor, usdcBalance } from "./lib/x402Client";
+import { fmt, toMicro } from "./lib/money";
+import { useMeeting } from "./hooks/useMeeting";
+import Odometer from "./components/Odometer";
+import BudgetRail from "./components/BudgetRail";
+import LevelMeter from "./components/LevelMeter";
+import TranscriptFeed from "./components/TranscriptFeed";
+import TicketStrip from "./components/TicketStrip";
+import ResultPanel from "./components/ResultPanel";
+import WalletChip from "./components/WalletChip";
+import HowItWorks from "./components/HowItWorks";
 
-const PRICE_PER_CHUNK = 0.02;
-const PRICE_SUMMARY = 0.05;
+const BUDGET_PRESETS = ["0.10", "0.25", "0.50", "1.00"];
+
+const elapsed = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+};
+
+function useNow(active) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [active]);
+  return now;
+}
 
 export default function App() {
-  const [wallet, setWallet] = useState(() => getSessionWallet());
-  const [balance, setBalance] = useState(0);
-  const [budgetCap, setBudgetCap] = useState(0.1);
-  const [spent, setSpent] = useState(0);
-  const [consentChecked, setConsentChecked] = useState(false);
+  const [config, setConfig] = useState(null);
+  const [configError, setConfigError] = useState(false);
+  const [wallet, setWallet] = useState(() => loadSessionWallet());
+  const [balance, setBalance] = useState(null);
+  const [consent, setConsent] = useState(false);
+  const [budget, setBudget] = useState("0.25");
   const [chunkSeconds, setChunkSeconds] = useState(60);
 
-  const [isRecording, setIsRecording] = useState(false);
-  const [statusMsg, setStatusMsg] = useState("Sẵn sàng bắt đầu phiên họp.");
-  const [chunksLog, setChunksLog] = useState([]);
-  const [summaryData, setSummaryData] = useState(null);
-  const [receiptData, setReceiptData] = useState(null);
-  const [isSummarizing, setIsSummarizing] = useState(false);
+  useEffect(() => {
+    fetch("/api/config")
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then(setConfig)
+      .catch(() => setConfigError(true));
+  }, []);
 
-  const sessionIdRef = useRef(`tm-${Date.now()}`);
-  const streamRef = useRef(null);
-  const recorderRef = useRef(null);
-  const timerRef = useRef(null);
-  const runningRef = useRef(false);
-  const spentRef = useRef(0);
-  const chunkIndexRef = useRef(0);
-
-  const refreshBalance = async (addr = wallet.address) => {
+  const refreshBalance = useCallback(async () => {
+    if (!config) return;
     try {
-      const bal = await getUsdcBalance(addr);
-      setBalance(bal);
-    } catch (e) {
-      console.error("Lỗi đọc số dư:", e);
+      setBalance(await usdcBalance(publicClientFor(config.network), config.network, wallet.address));
+    } catch {
+      /* RPC hiccup: keep the last value */
     }
-  };
+  }, [config, wallet.address]);
 
   useEffect(() => {
     refreshBalance();
-    const id = setInterval(() => refreshBalance(), 8000);
+    const id = setInterval(refreshBalance, 8000);
     return () => clearInterval(id);
-  }, [wallet.address]);
+  }, [refreshBalance]);
 
-  const processAudioChunk = async (blob, idx) => {
-    const audioUrl = URL.createObjectURL(blob);
-    setStatusMsg(`⏳ Đang thanh toán 0.02 USDC & chuyển giọng nói đoạn #${idx + 1}...`);
+  const meeting = useMeeting({ config, wallet, onPaid: refreshBalance });
+  const recording = meeting.phase === "recording";
+  const now = useNow(recording);
 
-    try {
-      const callPaidApi = createPayingFetch(wallet.account);
-      const { data, txHash } = await callPaidApi("/api/transcribe", {
-        method: "POST",
-        headers: { "Content-Type": "audio/webm" },
-        body: blob,
-      });
+  if (configError) {
+    return (
+      <div className="boot">
+        <Brand />
+        <p>Không kết nối được server TalkMeter.</p>
+        <p className="muted">Chạy <code>npm run server</code> (và <code>npm run client</code> nếu đang dev), rồi tải lại trang.</p>
+      </div>
+    );
+  }
+  if (!config) return <div className="boot"><Brand /><p className="muted">Đang tải cấu hình…</p></div>;
 
-      spentRef.current = Number((spentRef.current + PRICE_PER_CHUNK).toFixed(4));
-      setSpent(spentRef.current);
-
-      setChunksLog((prev) => [
-        ...prev,
-        {
-          index: idx + 1,
-          text: data.text || "(Không có lời thoại)",
-          transcriptHash: data.transcriptHash,
-          txHash: txHash || "0x0000000000000000000000000000000000000000000000000000000000000000",
-          audioUrl,
-        },
-      ]);
-
-      setStatusMsg(`✅ Đã ghi nhận đoạn #${idx + 1} (0.02 USDC).`);
-      refreshBalance();
-    } catch (err) {
-      setStatusMsg(`⚠️ Lỗi đoạn #${idx + 1}: ${err.message} (Không trừ tiền).`);
-    }
-  };
-
-  const startNextSegment = () => {
-    if (!runningRef.current || !streamRef.current) return;
-
-    if (spentRef.current + PRICE_PER_CHUNK > Number(budgetCap)) {
-      stopMeeting("🛑 Đã chạm trần ngân sách phiên! Mic tự động tắt.");
-      return;
-    }
-
-    const recorder = new MediaRecorder(streamRef.current, {
-      mimeType: "audio/webm;codecs=opus",
-    });
-    const parts = [];
-
-    recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) parts.push(e.data);
-    };
-
-    recorder.onstop = () => {
-      const idx = chunkIndexRef.current++;
-      const blob = new Blob(parts, { type: "audio/webm" });
-      if (blob.size > 0) {
-        processAudioChunk(blob, idx);
-      }
-      if (runningRef.current) {
-        if (spentRef.current + PRICE_PER_CHUNK > Number(budgetCap)) {
-          stopMeeting("🛑 Đã chạm trần ngân sách phiên! Mic tự động tắt.");
-        } else {
-          startNextSegment();
-        }
-      }
-    };
-
-    recorderRef.current = recorder;
-    recorder.start();
-
-    timerRef.current = setTimeout(() => {
-      if (recorder.state === "recording") {
-        recorder.stop();
-      }
-    }, chunkSeconds * 1000);
-  };
-
-  const startMeeting = async () => {
-    if (!consentChecked) {
-      alert("Vui lòng tích vào ô đồng ý ghi âm.");
-      return;
-    }
-    if (Number(budgetCap) < PRICE_PER_CHUNK) {
-      alert("Trần ngân sách phải tối thiểu 0.02 USDC.");
-      return;
-    }
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
-      runningRef.current = true;
-      setIsRecording(true);
-      setStatusMsg(`🎙️ Đang ghi âm (cắt mỗi ${chunkSeconds}s - 0.02 USDC/đoạn)...`);
-      startNextSegment();
-    } catch (err) {
-      alert("Không thể truy cập Micro: " + err.message);
-    }
-  };
-
-  const stopMeeting = (customMsg = "⏹️ Đã dừng ghi âm.") => {
-    runningRef.current = false;
-    setIsRecording(false);
-    clearTimeout(timerRef.current);
-
-    if (recorderRef.current && recorderRef.current.state === "recording") {
-      recorderRef.current.stop();
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    setStatusMsg(customMsg);
-  };
-
-  const finalizeMeeting = async () => {
-    if (chunksLog.length === 0) {
-      alert("Chưa có dữ liệu lời thoại nào để tóm tắt.");
-      return;
-    }
-
-    setIsSummarizing(true);
-    setStatusMsg("⏳ Đang thanh toán 0.05 USDC để AI tóm tắt & trích xuất Action Items...");
-
-    try {
-      const fullTranscript = chunksLog.map((c) => `[Đoạn ${c.index}]: ${c.text}`).join("\n");
-      const callPaidApi = createPayingFetch(wallet.account);
-
-      const { data: sumRes } = await callPaidApi("/api/summary", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcript: fullTranscript }),
-      });
-
-      setSummaryData(sumRes);
-      const totalPaid = Number((spentRef.current + PRICE_SUMMARY).toFixed(4));
-      setSpent(totalPaid);
-
-      setStatusMsg("⛓️ Đang ghi mã băm biên lai (Receipt Hash) lên Avalanche Fuji...");
-      const receiptRes = await fetch("/api/receipt", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: sessionIdRef.current,
-          payer: wallet.address,
-          chunks: chunksLog.map((c) => ({
-            transcriptHash: c.transcriptHash,
-            txHash: c.txHash,
-          })),
-          paidUsdc: Math.round(totalPaid * 1_000_000),
-        }),
-      });
-
-      const receiptJson = await receiptRes.json();
-      if (!receiptRes.ok) throw new Error(receiptJson.error);
-
-      setReceiptData(receiptJson);
-      setStatusMsg("🎉 Hoàn tất phiên họp! Biên lai đã lưu bất biến trên Avalanche Fuji.");
-      refreshBalance();
-    } catch (err) {
-      setStatusMsg(`❌ Lỗi khi tổng kết phiên: ${err.message}`);
-    } finally {
-      setIsSummarizing(false);
-    }
-  };
+  const { priceMicro, summaryMicro } = meeting;
+  const chunks = meeting.chunks;
+  const settled = chunks.filter((c) => c.status === "paid").length * priceMicro + (meeting.result ? summaryMicro : 0);
+  const pending = chunks.filter((c) => c.status === "paying" || c.status === "unconfirmed").length * priceMicro;
+  const live =
+    recording && meeting.segment ? Math.min(1, (now - meeting.segment.startedAt) / meeting.chunkMs) * priceMicro : 0;
+  const shown = settled + pending + live;
+  const railBudget = meeting.phase === "idle" ? toMicro(budget) : meeting.budget;
+  const lowBalance = balance !== null && balance * 1e6 < priceMicro + summaryMicro;
+  const minutes = chunkSeconds === 60 ? "phút" : `${chunkSeconds} giây`;
 
   return (
-    <div style={{ maxWidth: 880, margin: "0 auto", padding: 24, fontFamily: "system-ui, sans-serif" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid #ddd", paddingBottom: 16 }}>
-        <div>
-          <h1 style={{ margin: 0, color: "#E84142" }}>TalkMeter</h1>
-          <small>AI Meeting Copilot · Pay-as-you-go qua x402 trên Avalanche Fuji</small>
-        </div>
-        <div style={{ textAlign: "right", fontSize: 13 }}>
-          <div><strong>Ví phiên:</strong> {wallet.address.slice(0, 8)}...{wallet.address.slice(-6)}</div>
-          <div><strong>Số dư USDC:</strong> <span style={{ color: "#16a34a", fontWeight: "bold" }}>{balance.toFixed(4)} USDC</span></div>
-          <button
-            onClick={() => { navigator.clipboard.writeText(wallet.address); alert("Đã copy địa chỉ ví phiên!"); }}
-            style={{ marginRight: 6, fontSize: 11, cursor: "pointer" }}
-          >
-            Copy ví nạp USDC
-          </button>
-          <button
-            onClick={() => { setWallet(resetSessionWallet()); setChunksLog([]); setSpent(0); spentRef.current = 0; }}
-            style={{ fontSize: 11, cursor: "pointer" }}
-          >
-            Tạo ví mới
-          </button>
+    <>
+      <header className="topbar">
+        <Brand />
+        <div className="topbar-right">
+          <span className={`net net-${config.network.key}`}>
+            {config.network.name}
+            {config.network.key === "fuji" && <span className="muted"> testnet</span>}
+          </span>
+          <WalletChip
+            wallet={wallet}
+            balance={balance}
+            network={config.network}
+            locked={recording || meeting.phase === "summarizing"}
+            onNewWallet={() => {
+              setWallet(newSessionWallet());
+              setBalance(null);
+            }}
+          />
         </div>
       </header>
 
-      <section style={{ background: "#fef2f2", border: "1px solid #fecaca", padding: 16, borderRadius: 8, marginTop: 16 }}>
-        <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={consentChecked}
-            onChange={(e) => setConsentChecked(e.target.checked)}
-            disabled={isRecording}
-            style={{ marginTop: 4 }}
-          />
-          <span style={{ fontSize: 14 }}>
-            <strong>Thông báo quyền riêng tư & Đồng ý ghi âm:</strong> Tôi xác nhận đã thông báo và nhận được sự đồng ý của tất cả thành viên tham gia cuộc họp về việc thu âm và xử lý bằng AI. Chỉ mã băm (hash) biên lai được lưu on-chain, nội dung cuộc họp không lưu trên blockchain.
-          </span>
-        </label>
-      </section>
-
-      <section style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 16, background: "#f8fafc", padding: 16, borderRadius: 8 }}>
-        <div>
-          <label style={{ display: "block", fontSize: 12, fontWeight: "bold" }}>Trần ngân sách (USDC)</label>
-          <input
-            type="number"
-            step="0.02"
-            min="0.02"
-            value={budgetCap}
-            onChange={(e) => setBudgetCap(e.target.value)}
-            disabled={isRecording}
-            style={{ width: "90%", padding: 6, marginTop: 4 }}
-          />
-        </div>
-        <div>
-          <label style={{ display: "block", fontSize: 12, fontWeight: "bold" }}>Chu kỳ cắt đoạn</label>
-          <select
-            value={chunkSeconds}
-            onChange={(e) => setChunkSeconds(Number(e.target.value))}
-            disabled={isRecording}
-            style={{ width: "95%", padding: 6, marginTop: 4 }}
-          >
-            <option value={60}>60 giây (Chuẩn thực tế)</option>
-            <option value={15}>15 giây (Chế độ quay Demo nhanh)</option>
-          </select>
-        </div>
-        <div>
-          <div style={{ fontSize: 12, fontWeight: "bold" }}>Đã chi tiêu phiên này</div>
-          <div style={{ fontSize: 20, fontWeight: "bold", color: spent >= budgetCap ? "#dc2626" : "#0f172a", marginTop: 4 }}>
-            {spent.toFixed(2)} / {Number(budgetCap).toFixed(2)} USDC
+      <main className="deck">
+        <section className={`panel meter ${recording ? "is-live" : ""}`} aria-labelledby="meter-title">
+          <h1 id="meter-title" className="meter-title">
+            {recording ? "Đang tính tiền" : meeting.phase === "done" ? "Tổng phiên này" : "Họp bao nhiêu, trả bấy nhiêu"}
+          </h1>
+          <div className="meter-readout">
+            <Odometer value={fmt(shown, 4)} label={`${fmt(shown, 4)} USDC`} />
+            <span className="meter-unit">USDC</span>
           </div>
-        </div>
-      </section>
-
-      <div style={{ display: "flex", gap: 12, marginTop: 16, alignItems: "center" }}>
-        {!isRecording ? (
-          <button
-            onClick={startMeeting}
-            disabled={!consentChecked}
-            style={{ padding: "10px 20px", background: consentChecked ? "#E84142" : "#94a3b8", color: "#fff", border: "none", borderRadius: 6, fontWeight: "bold", cursor: consentChecked ? "pointer" : "not-allowed" }}
-          >
-            🎙️ Bắt đầu họp (0.02 USDC/đoạn)
-          </button>
-        ) : (
-          <button
-            onClick={() => stopMeeting()}
-            style={{ padding: "10px 20px", background: "#1e293b", color: "#fff", border: "none", borderRadius: 6, fontWeight: "bold", cursor: "pointer" }}
-          >
-            ⏹️ Dừng ghi âm
-          </button>
-        )}
-
-        <button
-          onClick={finalizeMeeting}
-          disabled={isRecording || chunksLog.length === 0 || isSummarizing}
-          style={{ padding: "10px 20px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, fontWeight: "bold", cursor: "pointer" }}
-        >
-          {isSummarizing ? "⏳ Đang xử lý..." : "✨ Tóm tắt & Lưu Biên lai (0.05 USDC)"}
-        </button>
-
-        {isRecording && <span style={{ color: "#dc2626", fontWeight: "bold" }}>● ĐANG GHI ÂM</span>}
-      </div>
-
-      <div style={{ marginTop: 12, padding: 10, background: "#f1f5f9", borderRadius: 6, fontSize: 14 }}>
-        <strong>Trạng thái:</strong> {statusMsg}
-      </div>
-
-      <section style={{ marginTop: 24 }}>
-        <h3>📝 Lời thoại trực tiếp (Transcript)</h3>
-        {chunksLog.length === 0 && <p style={{ color: "#64748b" }}>Chưa có đoạn ghi âm nào. Bấm "Bắt đầu họp" để thu âm.</p>}
-        {chunksLog.map((c) => (
-          <div key={c.index} style={{ border: "1px solid #e2e8f0", padding: 12, borderRadius: 8, marginBottom: 10 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#64748b", marginBottom: 6 }}>
-              <span><strong>Đoạn #{c.index}</strong> · Đã trả 0.02 USDC</span>
-              <div>
-                <audio controls src={c.audioUrl} style={{ height: 24, verticalAlign: "middle", marginRight: 8 }} />
-                {c.txHash && !c.txHash.startsWith("0x0000") && (
-                  <a href={`https://snowtrace.io{c.txHash}`} target="_blank" rel="noreferrer">
-                    Xem Tx trên Snowtrace ↗
-                  </a>
-                )}
-              </div>
+          <BudgetRail
+            budget={railBudget}
+            paid={settled - (meeting.result ? summaryMicro : 0)}
+            pending={pending}
+            live={live}
+            summaryMicro={summaryMicro}
+            priceMicro={priceMicro}
+          />
+          <dl className="meter-stats">
+            <div>
+              <dt>Thời gian</dt>
+              <dd>{meeting.startedAt ? elapsed(now - meeting.startedAt) : "00:00"}</dd>
             </div>
-            <div style={{ fontSize: 15 }}>{c.text}</div>
-          </div>
-        ))}
-      </section>
+            <div>
+              <dt>Đoạn đã trả</dt>
+              <dd>{chunks.filter((c) => c.status === "paid").length}</dd>
+            </div>
+            <div>
+              <dt>Giá</dt>
+              <dd>
+                {config.prices.transcribe} / {minutes}
+              </dd>
+            </div>
+            <div className="meter-level">
+              <dt>{recording ? <><i className="rec-dot" />Mic đang mở</> : "Mic tắt"}</dt>
+              <dd>{meeting.stream ? <LevelMeter stream={meeting.stream} /> : <span className="level-off" />}</dd>
+            </div>
+          </dl>
+        </section>
 
-      {summaryData && (
-        <section style={{ marginTop: 24, padding: 20, background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8 }}>
-          <h3 style={{ marginTop: 0 }}>📊 Tóm tắt cuộc họp & Action Items</h3>
-          <p><strong>Tóm tắt:</strong> {summaryData.summary}</p>
-
-          {summaryData.decisions?.length > 0 && (
+        <section className="panel control" aria-labelledby="control-title">
+          <h2 id="control-title" className="sr-only">Điều khiển phiên</h2>
+          {meeting.phase === "idle" && (
             <>
-              <strong>Quyết định đã chốt:</strong>
-              <ul>
-                {summaryData.decisions.map((d, i) => <li key={i}>{d}</li>)}
-              </ul>
+              <label className={`consent ${consent ? "is-on" : ""}`}>
+                <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+                <span>
+                  <strong>Mọi người trong cuộc họp đã đồng ý được ghi âm.</strong> Âm thanh được AI chuyển thành văn bản và tóm tắt,
+                  server không lưu file âm thanh. Chỉ hash của biên lai được ghi lên blockchain.
+                </span>
+              </label>
+
+              <fieldset className="field">
+                <legend>Trần ngân sách cho phiên</legend>
+                <div className="budget-input">
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    value={budget}
+                    onChange={(e) => setBudget(e.target.value)}
+                    aria-label="Trần ngân sách, USDC"
+                  />
+                  <span>USDC</span>
+                </div>
+                <div className="presets">
+                  {BUDGET_PRESETS.map((p) => (
+                    <button key={p} type="button" className={budget === p ? "is-on" : ""} onClick={() => setBudget(p)}>
+                      {p}
+                    </button>
+                  ))}
+                </div>
+                <p className="hint">
+                  Đủ cho khoảng {Math.max(0, Math.floor((toMicro(budget) - summaryMicro) / priceMicro))} đoạn và một bản tóm tắt.
+                </p>
+              </fieldset>
+
+              <fieldset className="field">
+                <legend>Độ dài mỗi đoạn</legend>
+                <div className="segmented">
+                  {[
+                    [60, "60 giây", "Họp thật"],
+                    [15, "15 giây", "Quay demo"],
+                  ].map(([s, label, note]) => (
+                    <label key={s} className={chunkSeconds === s ? "is-on" : ""}>
+                      <input type="radio" name="chunk" checked={chunkSeconds === s} onChange={() => setChunkSeconds(s)} />
+                      <strong>{label}</strong>
+                      <span>{note}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {lowBalance && (
+                <p className="callout callout-warn">
+                  Ví phiên chưa đủ USDC. Mở ví ở góc trên, copy địa chỉ rồi lấy USDC test tại faucet Circle (chọn Avalanche Fuji).
+                </p>
+              )}
+
+              <button
+                type="button"
+                className="btn btn-record"
+                disabled={!consent}
+                onClick={() => meeting.start({ budgetUsdc: budget, chunkSeconds })}
+              >
+                <i className="rec-dot" />
+                Bắt đầu ghi
+              </button>
+              {!consent && <p className="hint">Đánh dấu ô đồng ý để bật mic.</p>}
             </>
           )}
 
-          <strong>Danh sách việc cần làm (Action Items):</strong>
-          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 8, background: "#fff" }}>
-            <thead>
-              <tr style={{ background: "#dcfce7", textAlign: "left" }}>
-                <th style={{ padding: 8, border: "1px solid #cbd5e1" }}>Công việc</th>
-                <th style={{ padding: 8, border: "1px solid #cbd5e1" }}>Người phụ trách</th>
-                <th style={{ padding: 8, border: "1px solid #cbd5e1" }}>Hạn chót</th>
-                <th style={{ padding: 8, border: "1px solid #cbd5e1" }}>Trích dẫn gốc</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summaryData.action_items?.map((item, idx) => (
-                <tr key={idx}>
-                  <td style={{ padding: 8, border: "1px solid #cbd5e1" }}>{item.task}</td>
-                  <td style={{ padding: 8, border: "1px solid #cbd5e1" }}>{item.owner || "Chưa rõ"}</td>
-                  <td style={{ padding: 8, border: "1px solid #cbd5e1" }}>{item.deadline || "Chưa rõ"}</td>
-                  <td style={{ padding: 8, border: "1px solid #cbd5e1", fontStyle: "italic", fontSize: 13 }}>"{item.quote}"</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {recording && (
+            <>
+              <p className="live-line">
+                <i className="rec-dot" />
+                Đang ghi âm. Mic tự tắt trước khi chạm trần {fmt(meeting.budget, 2)} USDC.
+              </p>
+              <button type="button" className="btn btn-stop" onClick={meeting.stop}>
+                Dừng ghi
+              </button>
+            </>
+          )}
 
-          {receiptData && (
-            <div style={{ marginTop: 16, padding: 12, background: "#ecfdf5", border: "1px solid #10b981", borderRadius: 6 }}>
-              <strong>⛓️ Biên lai On-chain (Avalanche Fuji):</strong><br />
-              <code style={{ fontSize: 12 }}>Receipt Hash: {receiptData.receiptHash}</code><br />
-              <a href={receiptData.explorerUrl} target="_blank" rel="noreferrer" style={{ fontWeight: "bold", color: "#047857" }}>
-                Kiểm chứng giao dịch trên Snowtrace ↗
-              </a>
-            </div>
+          {(meeting.phase === "stopped" || meeting.phase === "summarizing") && (
+            <>
+              <p className="live-line">
+                {chunks.filter((c) => c.status === "paid").length} đoạn đã trả tiền. Tóm tắt cả phiên và ghi receipt lên chain.
+              </p>
+              <button
+                type="button"
+                className="btn btn-primary btn-wide"
+                disabled={meeting.busy || meeting.phase === "summarizing"}
+                onClick={meeting.finalize}
+              >
+                {meeting.phase === "summarizing"
+                  ? "Đang tóm tắt và ghi receipt…"
+                  : meeting.busy
+                    ? "Chờ các đoạn đang xử lý…"
+                    : `Tóm tắt và ghi receipt (${config.prices.summary} USDC)`}
+              </button>
+              <button type="button" className="btn btn-quiet" onClick={meeting.reset} disabled={meeting.phase === "summarizing"}>
+                Bỏ phiên này
+              </button>
+            </>
+          )}
+
+          {meeting.phase === "done" && (
+            <button type="button" className="btn btn-quiet btn-wide" onClick={meeting.reset}>
+              Bắt đầu phiên mới
+            </button>
+          )}
+
+          {meeting.notice && (
+            <p className={`callout callout-${meeting.notice.tone}`} role="status">
+              {meeting.notice.text}
+            </p>
           )}
         </section>
-      )}
+
+        <TranscriptFeed chunks={chunks} recording={recording} segment={meeting.segment} onRetry={meeting.retry} />
+        <TicketStrip
+          chunks={chunks}
+          priceMicro={priceMicro}
+          summaryMicro={summaryMicro}
+          explorer={config.network.explorer}
+          result={meeting.result}
+          receipt={meeting.receipt}
+        />
+        <ResultPanel meeting={meeting} contract={config.receiptContract} explorer={config.network.explorer} />
+        <HowItWorks price={config.prices.transcribe} network={config.network.name} />
+      </main>
+
+      <footer className="foot">
+        <p>
+          Bản demo chạy trên {config.network.name} với USDC thử nghiệm, không có giá trị thật. Tại Việt Nam, USDC chưa phải phương
+          tiện thanh toán hợp pháp; bản thương mại sẽ thu bằng đồng Việt Nam qua trung gian được cấp phép và chỉ dùng chain để ghi biên lai.
+        </p>
+        <p className="muted">TalkMeter, Team1 Vietnam UniHack 2026, Topic 19.</p>
+      </footer>
+    </>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="brand">
+      <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
+        <path d="M6 21a10 10 0 0 1 20 0" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+        <path d="M16 21 22 12" stroke="#E84142" strokeWidth="2.6" strokeLinecap="round" />
+        <circle cx="16" cy="21" r="2.4" fill="#E84142" />
+      </svg>
+      <span>TalkMeter</span>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 {
-  "name": "client",
+  "name": "talkmeter-client",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -10,9 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@x402/core": "^2.28.0",
-    "@x402/evm": "^2.28.0",
-    "@x402/fetch": "^2.28.0",
+    "@x402/core": "~2.28.0",
+    "@x402/evm": "~2.28.0",
+    "@x402/fetch": "~2.28.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "viem": "^2.58.0"

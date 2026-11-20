@@ -167,7 +167,7 @@ export function useMeeting({ config, wallet, onPaid }) {
   const paidChunks = ordered.filter((c) => c.status === "paid");
   const busy = ordered.some((c) => c.status === "paying");
 
-  const finalize = async () => {
+  const finalize = async (mode = "meeting") => {
     const spoken = ordered.filter((c) => (c.status === "paid" || c.status === "unconfirmed") && c.text.trim());
     if (!spoken.length) {
       setNotice({ tone: "warn", text: "Chưa có lời thoại nào để tóm tắt. Bạn không bị trừ tiền." });
@@ -180,6 +180,7 @@ export function useMeeting({ config, wallet, onPaid }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          mode,
           transcript: spoken.map((c) => `[Đoạn ${c.index}] ${c.text}`).join("\n"),
           sessionId: r.sessionId,
           payer: wallet.address,
@@ -187,7 +188,7 @@ export function useMeeting({ config, wallet, onPaid }) {
         }),
       });
       setCommittedBy(summaryMicro);
-      setResult({ summary: data.summary, decisions: data.decisions || [], action_items: data.action_items || [], summaryTx: txHash });
+      setResult({ mode: data.mode || mode, summary: data.summary, decisions: data.decisions || [], action_items: data.action_items || [], summaryTx: txHash });
       setReceipt(data.receipt);
       setReceiptError(data.receiptError);
       setPhase("done");

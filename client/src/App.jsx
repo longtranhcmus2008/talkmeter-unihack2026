@@ -234,20 +234,32 @@ export default function App() {
           {(meeting.phase === "stopped" || meeting.phase === "summarizing") && (
             <>
               <p className="live-line">
-                {chunks.filter((c) => c.status === "paid").length} đoạn đã trả tiền. Tóm tắt cả phiên và ghi receipt lên chain.
+                {chunks.filter((c) => c.status === "paid").length} đoạn đã trả tiền. Chọn chế độ phân tích ({config.prices.summary} USDC) và ghi receipt lên chain:
               </p>
-              <button
-                type="button"
-                className="btn btn-primary btn-wide"
-                disabled={meeting.busy || meeting.phase === "summarizing"}
-                onClick={meeting.finalize}
-              >
-                {meeting.phase === "summarizing"
-                  ? "Đang tóm tắt và ghi receipt…"
-                  : meeting.busy
-                    ? "Chờ các đoạn đang xử lý…"
-                    : `Tóm tắt và ghi receipt (${config.prices.summary} USDC)`}
-              </button>
+              <div style={{ display: "grid", gap: "8px", width: "100%" }}>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-wide"
+                  disabled={meeting.busy || meeting.phase === "summarizing"}
+                  onClick={() => meeting.finalize("meeting")}
+                >
+                  {meeting.phase === "summarizing"
+                    ? "Đang phân tích và ghi receipt…"
+                    : meeting.busy
+                      ? "Chờ các đoạn đang xử lý…"
+                      : `Họp nhóm: Tóm tắt & Việc cần làm (${config.prices.summary} USDC)`}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-wide"
+                  disabled={meeting.busy || meeting.phase === "summarizing"}
+                  onClick={() => meeting.finalize("interview")}
+                >
+                  {meeting.phase === "summarizing"
+                    ? "Đang phân tích và ghi receipt…"
+                    : `Phỏng vấn: Chấm điểm & Cảnh báo thiên vị (${config.prices.summary} USDC)`}
+                </button>
+              </div>
               <button type="button" className="btn btn-quiet" onClick={meeting.reset} disabled={meeting.phase === "summarizing"}>
                 Bỏ phiên này
               </button>

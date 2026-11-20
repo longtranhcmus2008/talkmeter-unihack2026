@@ -17,7 +17,7 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const PRICE_TRANSCRIBE = process.env.PRICE_TRANSCRIBE || "0.02";
 const PRICE_SUMMARY = process.env.PRICE_SUMMARY || "0.05";
 const PRICE_GAS = process.env.PRICE_USDC || "0.001";
-const STT_PROMPT = process.env.STT_PROMPT || "TalkMeter, Avalanche, Fuji, USDC, x402, smart contract.";
+const STT_PROMPT = process.env.STT_PROMPT || "Cuộc họp nhóm sinh viên Việt Nam bàn về dự án TalkMeter, phân công nhiệm vụ và thời hạn hoàn thành.";
 const LLM_MODEL = process.env.LLM_MODEL || "openai/gpt-oss-120b";
 const RECEIPT_CONTRACT = process.env.RECEIPT_CONTRACT || "";
 
@@ -143,11 +143,20 @@ app.post("/api/transcribe", async (req, res) => {
     const contentType = req.headers["content-type"] || "audio/webm";
     const ext = contentType.includes("wav") ? "wav" : contentType.includes("mp4") ? "mp4" : contentType.includes("ogg") ? "ogg" : "webm";
 
+    console.log(`[STT] Nhận chunk: ${req.body.length} bytes, type: ${contentType}`);
+    if (req.body.length < 3000) {
+      return res.json({ text: "", transcriptHash: textHash("") });
+    }
+
+    const cleanMime = contentType.replace(/;.*$/, "").trim();
     const form = new FormData();
-    form.append("file", new Blob([req.body], { type: contentType }), `chunk.${ext}`);
+    form.append("file", new Blob([req.body], { type: cleanMime }), `chunk.${ext}`);
     form.append("model", "whisper-large-v3");
-    form.append("prompt", STT_PROMPT);
+    form.append("language", "vi");
+    form.append("temperature", "0");
     form.append("response_format", "json");
+
+
 
     const r = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
       method: "POST",
@@ -168,7 +177,7 @@ app.post("/api/transcribe", async (req, res) => {
 });
 
 app.post("/api/summary", async (req, res) => {
-  const { transcript } = req.body || {};
+  const { transcript, mode = "meeting" } = req.body || {};
   if (typeof transcript !== "string" || transcript.trim().length < 5) {
     return res.status(400).json({ error: "Transcript quá ngắn để tóm tắt. Bạn không bị trừ tiền." });
   }
@@ -181,13 +190,22 @@ app.post("/api/summary", async (req, res) => {
     const tz = "Asia/Ho_Chi_Minh";
     const today = new Date().toLocaleDateString("sv-SE", { timeZone: tz });
     const weekday = new Date().toLocaleDateString("vi-VN", { weekday: "long", timeZone: tz });
-    const system = [
-      "Bạn là thư ký cuộc họp của TalkMeter. Chỉ trả về một đối tượng JSON hợp lệ, không bọc markdown.",
-      `Hôm nay là ${weekday}, ngày ${today}.`,
-      "Chỉ dùng thông tin có trong transcript. Không đoán.",
-      "action_items: owner là tên người được giao việc, không rõ thì null. deadline đổi mốc tương đối ('thứ Sáu tuần này', 'ngày mai') thành YYYY-MM-DD theo ngày hôm nay, không có thì null. quote là câu gốc trong transcript.",
-      'Khuôn bắt buộc: {"summary":"3-5 câu, cùng ngôn ngữ với cuộc họp","decisions":["..."],"action_items":[{"task":"...","owner":null,"deadline":null,"quote":"..."}]}',
-    ].join("\n");
+
+    const isInterview = mode === "interview";
+    const system = isInterview
+      ? [
+          "Bạn là Trợ lý Phỏng vấn (Interviewer Copilot) công bằng của TalkMeter. Chỉ trả về JSON hợp lệ, không bọc markdown.",
+          "Đứng về phía nhà tuyển dụng để đánh giá khách quan, KHÔNG mớm câu trả lời cho ứng viên.",
+          "Phân tích transcript cuộc phỏng vấn để: (1) tóm tắt năng lực ứng viên, (2) cảnh báo câu hỏi có nguy cơ thiên vị (tuổi tác, giới tính, vùng miền, đời tư) hoặc điểm cần lưu ý vào mảng decisions, (3) chấm điểm từng tiêu chí vào action_items với cấu trúc: task = Tên tiêu chí + Nhận xét ngắn, owner = Điểm số (ví dụ '8/10'), deadline = Gợi ý câu hỏi đào sâu tiếp theo, quote = Câu nói dẫn chứng trong transcript.",
+          'Khuôn JSON bắt buộc: {"summary":"3-5 câu đánh giá tổng quan ứng viên","decisions":["Cảnh báo thiên vị / Điểm lưu ý..."],"action_items":[{"task":"Tiêu chí: ...","owner":"8/10","deadline":"Câu hỏi đào sâu: ...","quote":"..."}]}',
+        ].join("\n")
+      : [
+          "Bạn là thư ký cuộc họp của TalkMeter. Chỉ trả về một đối tượng JSON hợp lệ, không bọc markdown.",
+          `Hôm nay là ${weekday}, ngày ${today}.`,
+          "Chỉ dùng thông tin có trong transcript. Không đoán.",
+          "action_items: owner là tên người được giao việc, không rõ thì null. deadline đổi mốc tương đối ('thứ Sáu tuần này', 'ngày mai') thành YYYY-MM-DD theo ngày hôm nay, không có thì null. quote là câu gốc trong transcript.",
+          'Khuôn bắt buộc: {"summary":"3-5 câu, cùng ngôn ngữ với cuộc họp","decisions":["..."],"action_items":[{"task":"...","owner":null,"deadline":null,"quote":"..."}]}',
+        ].join("\n");
 
     const r = await fetch(`${GROQ_BASE}/chat/completions`, {
       method: "POST",
@@ -213,12 +231,12 @@ app.post("/api/summary", async (req, res) => {
       return res.status(502).json({ error: "AI trả về sai định dạng. Bạn không bị trừ tiền." });
     }
     const summary = {
+      mode: isInterview ? "interview" : "meeting",
       summary: String(result.summary || ""),
       decisions: Array.isArray(result.decisions) ? result.decisions.map(String) : [],
       action_items: Array.isArray(result.action_items) ? result.action_items : [],
     };
 
-    // The summary is already paid for (verified before this route runs), so the receipt write cannot be abused for free.
     let receipt = null;
     let receiptError = null;
     if (receiptsEnabled) {

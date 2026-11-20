@@ -279,7 +279,14 @@ export default function App() {
           )}
         </section>
 
-        <TranscriptFeed chunks={chunks} recording={recording} segment={meeting.segment} onRetry={meeting.retry} />
+        <TranscriptFeed
+          chunks={chunks}
+          recording={recording}
+          segment={meeting.segment}
+          onRetry={meeting.retry}
+          onEdit={meeting.editChunk}
+          locked={meeting.phase === "summarizing" || meeting.phase === "done"}
+        />
         <TicketStrip
           chunks={chunks}
           priceMicro={priceMicro}
@@ -304,7 +311,11 @@ export default function App() {
 }
 
 function Brand() {
+  const editChunk = (index, newText) => {
+    update(index, { text: newText, transcriptHash: textHash(newText) });
+  };
   return (
+    editchunk,
     <div className="brand">
       <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
         <path d="M6 21a10 10 0 0 1 20 0" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />

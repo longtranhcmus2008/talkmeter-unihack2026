@@ -274,6 +274,12 @@ export function useMeeting({ config, wallet, onPaid }) {
     r.stream?.getTracks().forEach((t) => t.stop());
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const editChunk = (index, text) => {
+    setChunks((prev) =>
+      prev.map((c) => (c.index === index ? { ...c, text } : c))
+    );
+  };
+
   return {
     phase,
     chunks: ordered,
@@ -296,6 +302,7 @@ export function useMeeting({ config, wallet, onPaid }) {
     start,
     stop,
     retry,
+    editChunk,
     finalize,
     retryReceipt,
     verify,

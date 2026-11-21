@@ -32,12 +32,15 @@ Sinh viên và nhóm nhỏ họp ít và không đều. Họ không muốn trả
 
 **Giới hạn cần nói thẳng:** server tin danh sách mã giao dịch do trình duyệt gửi lên. Receipt chứng minh bản ghi không bị sửa, nhưng chưa chứng minh server đã tự đối chiếu từng giao dịch. Bản đầy đủ sẽ đọc sự kiện `Transfer` của USDC trước khi ghi receipt.
 
-## Trên chain (điền trước khi nộp)
+## Trên chain (Avalanche Fuji)
 
-- Contract `ReceiptLog` trên Fuji: `0x...` ([Snowtrace](https://testnet.snowtrace.io/address/0x...))
-- Ba giao dịch x402 liên tiếp của một phiên: [phút 1](https://testnet.snowtrace.io/tx/0x...), [phút 2](https://testnet.snowtrace.io/tx/0x...), [phút 3](https://testnet.snowtrace.io/tx/0x...)
-- Giao dịch receipt của phiên đó: [receipt](https://testnet.snowtrace.io/tx/0x...)
-- Gas đo được cho một lần settle: `... gas × ... gwei = ... AVAX` (lấy từ Snowtrace)
+Một phiên chạy thật ngày 21/11/2026 bằng `npm run test-ai`: 3 đoạn âm thanh, 1 bản tóm tắt, 1 receipt.
+
+- Contract `ReceiptLog`: [`0x898af85f88e2d6bd57e7edeae22259f93a75a78a`](https://testnet.snowtrace.io/address/0x898af85f88e2d6bd57e7edeae22259f93a75a78a)
+- Ba giao dịch x402 liên tiếp, mỗi giao dịch 0.02 USDC: [đoạn 1](https://testnet.snowtrace.io/tx/0xeee6c853f18e82e26b85af438cda94ea05b12c9ff4c7411b487f6c6512dc144b), [đoạn 2](https://testnet.snowtrace.io/tx/0xb867b704fed15f8962be12fe452d94e9feb24f3cd3f2f6c14dd291bd1d090054), [đoạn 3](https://testnet.snowtrace.io/tx/0xb432e9bca3632f05d69beacbf8a9857594aacab969b76f6e76272ac299ca1253)
+- Bản tóm tắt, 0.05 USDC: [giao dịch](https://testnet.snowtrace.io/tx/0x9d56da264fd2acecd690cbd2d943aefa037b6e43537754183f45656aef9a87ea)
+- Receipt của phiên đó: [giao dịch](https://testnet.snowtrace.io/tx/0xa3217c8174b2b1655e4d267977f26ddb4ff9fdcc660fe15de147d8cd6657457f), hash `0x1df9b4e5…7e8b1`. Tính lại từ transcript và mã giao dịch thì khớp với `receiptOf`.
+- Gas đo được cho một lần settle x402: `86,144 gas × 0.001 gwei ≈ 0.000000086 AVAX`. Ghi receipt: `48,914 gas`.
 
 ## Chạy thử
 
@@ -50,6 +53,8 @@ npm run new-wallet             # tạo ví operator, dán khóa vào OPERATOR_PR
 npm run deploy-receipt         # cần ít AVAX test trong ví operator; dán địa chỉ vào RECEIPT_CONTRACT
 npm run build && npm start     # mở http://localhost:4021
 ```
+
+Chạy thử cả phiên không cần mic: để server chạy, rồi ở cửa sổ khác gõ `npm run test-ai`. Script gửi 3 đoạn âm thanh mẫu trong `test/audio/` (tổng cộng 0.11 USDC test từ ví `BUYER_PRIVATE_KEY`), tóm tắt, ghi receipt rồi tự kiểm chứng với chain. File mẫu là tiếng Anh, nên đặt `STT_LANGUAGE=` khi chạy server để lời thoại ra đúng.
 
 Khi đang sửa giao diện, chạy `npm run server` và `npm run client` ở hai terminal rồi mở http://localhost:5173.
 
@@ -106,6 +111,7 @@ Receipt được ghi ngay trong route `/api/summary`, vốn đã có trả tiề
 | `npm start` | Chạy server, phục vụ bản web đã build |
 | `npm run client` | Web ở chế độ dev (Vite, cổng 5173) |
 | `npm test` | Kiểm tra công thức receipt |
+| `npm run test-ai` | Chạy trọn một phiên có trả tiền thật trên Fuji (cần server đang chạy và USDC test) |
 | `npm run deploy-receipt` | Deploy `ReceiptLog` bằng ví operator |
 | `npm run verify-receipt -- <file.json>` | Kiểm chứng biên lai tải từ app với chain |
 | `npm run facilitator` | Facilitator dự phòng (đặt `FACILITATOR_URL=http://localhost:4022`) |

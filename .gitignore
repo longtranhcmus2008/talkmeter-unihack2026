@@ -1,2 +1,5 @@
 node_modules
 .env.local
+
+# receipts saved by npm run test-ai
+talkmeter-receipt-*.json

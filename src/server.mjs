@@ -1,5 +1,6 @@
 // TalkMeter seller: two paid routes (one minute of transcript, one meeting summary) and the on-chain receipt.
 import fs from "node:fs";
+import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -88,6 +89,28 @@ async function writeReceipt({ sessionId, payer, chunks }) {
   return { receiptHash: hash, txHash, explorerUrl: txLink(txHash), paidUsdc: fromUnits(paidUnits) };
 }
 
+// Node's fetch talks HTTP/2 to Groq, and audio uploads over it die with NGHTTP2_PROTOCOL_ERROR on slow links.
+// The same upload over HTTP/1.1 works, so STT goes through node:https.
+async function postForm(url, form, headers) {
+  const packed = new Response(form); // serializes the multipart body and its boundary header
+  const body = Buffer.from(await packed.arrayBuffer());
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      url,
+      { method: "POST", headers: { ...headers, "Content-Type": packed.headers.get("content-type"), "Content-Length": body.length }, timeout: 90_000 },
+      (res) => {
+        const parts = [];
+        res.on("data", (d) => parts.push(d));
+        res.on("end", () => resolve({ status: res.statusCode, text: Buffer.concat(parts).toString("utf8") }));
+        res.on("error", reject);
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("STT không trả lời sau 90 giây")));
+    req.on("error", reject);
+    req.end(body);
+  });
+}
+
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 function readReceiptInput(body) {
   const { sessionId, payer, chunks } = body || {};
@@ -157,16 +180,13 @@ app.post("/api/transcribe", async (req, res) => {
     form.append("temperature", "0");
     form.append("response_format", "json");
 
-    const r = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${GROQ_API_KEY}` },
-      body: form,
-    });
-    if (!r.ok) {
-      console.error("[Lỗi Groq STT]", r.status, await r.text());
+    const stt = () => postForm(`${GROQ_BASE}/audio/transcriptions`, form, { Authorization: `Bearer ${GROQ_API_KEY}` });
+    const r = await stt().catch(stt); // one retry: dropped connections are common on event Wi-Fi, and nothing is settled yet
+    if (r.status !== 200) {
+      console.error("[Lỗi Groq STT]", r.status, r.text);
       return res.status(502).json({ error: r.status === 429 ? "STT đang quá tải (429). Bạn không bị trừ tiền." : "STT lỗi. Bạn không bị trừ tiền." });
     }
-    const text = ((await r.json()).text || "").trim();
+    const text = (JSON.parse(r.text).text || "").trim();
     // The audio is not stored: received, sent to STT, dropped.
     res.json({ text, transcriptHash: textHash(text) });
   } catch (err) {
@@ -208,6 +228,7 @@ app.post("/api/summary", async (req, res) => {
 
     const r = await fetch(`${GROQ_BASE}/chat/completions`, {
       method: "POST",
+      signal: AbortSignal.timeout(90_000),
       headers: { Authorization: `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model: LLM_MODEL,

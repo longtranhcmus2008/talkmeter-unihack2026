@@ -16,11 +16,12 @@ export default function TranscriptFeed({ chunks, recording, segment, onRetry, on
 
   const startEdit = (c) => {
     setEditingIndex(c.index);
-    setDraft(c.text || "");
+    setDraft(c.edited ?? c.text ?? "");
   };
 
-  const saveEdit = (index) => {
-    onEdit?.(index, draft.trim());
+  const saveEdit = (c) => {
+    const text = draft.trim();
+    onEdit?.(c.index, text === c.text ? undefined : text); // back to the original clears the correction
     setEditingIndex(null);
   };
 
@@ -28,7 +29,7 @@ export default function TranscriptFeed({ chunks, recording, segment, onRetry, on
     <section className="panel feed" aria-labelledby="feed-title">
       <header className="panel-head">
         <h2 id="feed-title">Lời thoại</h2>
-        <span className="muted">Hiện dần sau mỗi đoạn đã trả tiền (bấm Sửa nếu AI nghe nhầm tên riêng)</span>
+        <span className="muted">Hiện dần sau mỗi đoạn đã trả tiền. AI nghe nhầm tên riêng thì bấm Sửa.</span>
       </header>
       {chunks.length === 0 && !recording && (
         <p className="empty">Chưa có gì. Đánh dấu ô đồng ý, đặt trần ngân sách rồi bấm Bắt đầu ghi.</p>
@@ -42,47 +43,50 @@ export default function TranscriptFeed({ chunks, recording, segment, onRetry, on
               <div className="line-meta">
                 <span className="line-time">{at}</span>
                 {c.audioUrl && <PlayButton src={c.audioUrl} label={`đoạn ${c.index}`} />}
-                {!locked && !isEditing && (c.status === "paid" || c.status === "unconfirmed") && onEdit && (
-                  <button
-                    type="button"
-                    className="btn btn-quiet"
-                    style={{ padding: "2px 8px", fontSize: "12px", marginLeft: "auto" }}
-                    onClick={() => startEdit(c)}
-                  >
-                    Sửa
-                  </button>
-                )}
               </div>
               <div className="line-body">
                 {c.status === "paying" && <p className="line-wait">Đang trả tiền và chuyển giọng nói…</p>}
                 {(c.status === "paid" || c.status === "unconfirmed") &&
                   (isEditing ? (
-                    <div style={{ display: "grid", gap: "8px" }}>
+                    <div className="line-edit">
                       <textarea
-                        rows={2}
+                        rows={3}
                         value={draft}
+                        autoFocus
+                        onFocus={(e) => e.target.setSelectionRange(e.target.value.length, e.target.value.length)}
+                        aria-label={`Sửa lời thoại đoạn ${c.index}`}
                         onChange={(e) => setDraft(e.target.value)}
-                        style={{
-                          width: "100%",
-                          padding: "8px",
-                          borderRadius: "8px",
-                          border: "1px solid rgba(255,255,255,0.2)",
-                          background: "rgba(0,0,0,0.25)",
-                          color: "inherit",
-                          font: "inherit",
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") setEditingIndex(null);
+                          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) saveEdit(c);
                         }}
                       />
-                      <div style={{ display: "flex", gap: "8px" }}>
-                        <button type="button" className="btn btn-primary" style={{ padding: "4px 12px" }} onClick={() => saveEdit(c.index)}>
+                      <div className="line-edit-actions">
+                        <button type="button" className="btn btn-primary btn-sm" onClick={() => saveEdit(c)}>
                           Lưu
                         </button>
-                        <button type="button" className="btn btn-quiet" style={{ padding: "4px 12px" }} onClick={() => setEditingIndex(null)}>
+                        <button type="button" className="btn btn-quiet btn-sm" onClick={() => setEditingIndex(null)}>
                           Hủy
                         </button>
+                        <span className="hint">Ctrl + Enter để lưu, Esc để hủy</span>
                       </div>
                     </div>
                   ) : (
-                    <p>{c.text || <span className="muted">Không nghe thấy lời thoại trong đoạn này.</span>}</p>
+                    <div className="line-text">
+                      <p>{(c.edited ?? c.text) || <span className="muted">Không nghe thấy lời thoại trong đoạn này.</span>}</p>
+                      <div className="line-tools">
+                        {c.edited !== undefined && (
+                          <span className="tag" title={`AI nghe được: ${c.text || "(trống)"}`}>
+                            Đã sửa
+                          </span>
+                        )}
+                        {!locked && onEdit && (
+                          <button type="button" className="link-btn" onClick={() => startEdit(c)}>
+                            Sửa<span className="sr-only"> đoạn {c.index}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   ))}
                 {c.status === "unconfirmed" && (
                   <p className="line-note">Server không gửi lại mã giao dịch, nên đoạn này không được đưa vào receipt.</p>

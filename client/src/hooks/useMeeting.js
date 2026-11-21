@@ -168,7 +168,8 @@ export function useMeeting({ config, wallet, onPaid }) {
   const busy = ordered.some((c) => c.status === "paying");
 
   const finalize = async (mode = "meeting") => {
-    const spoken = ordered.filter((c) => (c.status === "paid" || c.status === "unconfirmed") && c.text.trim());
+    const said = (c) => c.edited ?? c.text; // corrections feed the summary; the receipt keeps the paid STT text
+    const spoken = ordered.filter((c) => (c.status === "paid" || c.status === "unconfirmed") && said(c).trim());
     if (!spoken.length) {
       setNotice({ tone: "warn", text: "Chưa có lời thoại nào để tóm tắt. Bạn không bị trừ tiền." });
       return;
@@ -181,7 +182,7 @@ export function useMeeting({ config, wallet, onPaid }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode,
-          transcript: spoken.map((c) => `[Đoạn ${c.index}] ${c.text}`).join("\n"),
+          transcript: spoken.map((c) => `[Đoạn ${c.index}] ${said(c)}`).join("\n"),
           sessionId: r.sessionId,
           payer: wallet.address,
           chunks: paidChunks.map(({ index, transcriptHash, txHash }) => ({ index, transcriptHash, txHash })),
@@ -246,7 +247,7 @@ export function useMeeting({ config, wallet, onPaid }) {
       payer: wallet.address,
       receiptHash: receipt?.receiptHash,
       receiptTx: receipt?.txHash,
-      chunks: paidChunks.map(({ index, text, transcriptHash, txHash }) => ({ index, text, transcriptHash, txHash })),
+      chunks: paidChunks.map(({ index, text, edited, transcriptHash, txHash }) => ({ index, text, edited, transcriptHash, txHash })),
     };
     const url = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: "application/json" }));
     const a = Object.assign(document.createElement("a"), { href: url, download: `talkmeter-receipt-${r.sessionId}.json` });
@@ -274,11 +275,8 @@ export function useMeeting({ config, wallet, onPaid }) {
     r.stream?.getTracks().forEach((t) => t.stop());
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const editChunk = (index, text) => {
-    setChunks((prev) =>
-      prev.map((c) => (c.index === index ? { ...c, text } : c))
-    );
-  };
+  // The paid STT text stays untouched, so the on-chain receipt still verifies after a correction.
+  const editChunk = (index, edited) => update(index, { edited });
 
   return {
     phase,

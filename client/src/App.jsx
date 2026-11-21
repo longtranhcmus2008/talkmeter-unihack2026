@@ -4,7 +4,7 @@ import { fmt, toMicro } from "./lib/money";
 import { useMeeting } from "./hooks/useMeeting";
 import Odometer from "./components/Odometer";
 import BudgetRail from "./components/BudgetRail";
-import LevelMeter from "./components/LevelMeter";
+import Waveform from "./components/Waveform";
 import TranscriptFeed from "./components/TranscriptFeed";
 import TicketStrip from "./components/TicketStrip";
 import ResultPanel from "./components/ResultPanel";
@@ -12,6 +12,28 @@ import WalletChip from "./components/WalletChip";
 import HowItWorks from "./components/HowItWorks";
 
 const BUDGET_PRESETS = ["0.10", "0.25", "0.50", "1.00"];
+const CHUNKS = [
+  [60, "60 giây", "Họp thật"],
+  [15, "15 giây", "Quay demo"],
+];
+const MODES = [
+  ["meeting", "Họp nhóm", "Tóm tắt, quyết định, việc cần làm"],
+  ["interview", "Phỏng vấn", "Chấm điểm, cảnh báo câu hỏi thiên vị"],
+];
+
+function Segmented({ name, options, value, onChange, disabled }) {
+  return (
+    <div className="segmented">
+      {options.map(([v, label, note]) => (
+        <label key={v} className={value === v ? "is-on" : ""}>
+          <input type="radio" name={name} checked={value === v} onChange={() => onChange(v)} disabled={disabled} />
+          <strong>{label}</strong>
+          <span>{note}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
 
 const elapsed = (ms) => {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -19,7 +41,7 @@ const elapsed = (ms) => {
 };
 
 function useNow(active) {
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     if (!active) return;
     const id = setInterval(() => setNow(Date.now()), 250);
@@ -36,6 +58,7 @@ export default function App() {
   const [consent, setConsent] = useState(false);
   const [budget, setBudget] = useState("0.25");
   const [chunkSeconds, setChunkSeconds] = useState(60);
+  const [mode, setMode] = useState("meeting");
 
   useEffect(() => {
     fetch("/api/config")
@@ -124,6 +147,7 @@ export default function App() {
             summaryMicro={summaryMicro}
             priceMicro={priceMicro}
           />
+          <Waveform stream={meeting.stream} segment={meeting.segment} price={config.prices.transcribe} idle={meeting.phase === "idle"} />
           <dl className="meter-stats">
             <div>
               <dt>Thời gian</dt>
@@ -139,9 +163,11 @@ export default function App() {
                 {config.prices.transcribe} / {minutes}
               </dd>
             </div>
-            <div className="meter-level">
-              <dt>{recording ? <><i className="rec-dot" />Mic đang mở</> : "Mic tắt"}</dt>
-              <dd>{meeting.stream ? <LevelMeter stream={meeting.stream} /> : <span className="level-off" />}</dd>
+            <div>
+              <dt>Mic</dt>
+              <dd className={recording ? "is-rec" : ""}>
+                {recording ? <><i className="rec-dot" />Đang mở</> : "Tắt"}
+              </dd>
             </div>
           </dl>
         </section>
@@ -186,18 +212,12 @@ export default function App() {
 
               <fieldset className="field">
                 <legend>Độ dài mỗi đoạn</legend>
-                <div className="segmented">
-                  {[
-                    [60, "60 giây", "Họp thật"],
-                    [15, "15 giây", "Quay demo"],
-                  ].map(([s, label, note]) => (
-                    <label key={s} className={chunkSeconds === s ? "is-on" : ""}>
-                      <input type="radio" name="chunk" checked={chunkSeconds === s} onChange={() => setChunkSeconds(s)} />
-                      <strong>{label}</strong>
-                      <span>{note}</span>
-                    </label>
-                  ))}
-                </div>
+                <Segmented name="chunk" options={CHUNKS} value={chunkSeconds} onChange={setChunkSeconds} />
+              </fieldset>
+
+              <fieldset className="field">
+                <legend>Loại phiên</legend>
+                <Segmented name="mode" options={MODES} value={mode} onChange={setMode} />
               </fieldset>
 
               {lowBalance && (
@@ -234,32 +254,25 @@ export default function App() {
           {(meeting.phase === "stopped" || meeting.phase === "summarizing") && (
             <>
               <p className="live-line">
-                {chunks.filter((c) => c.status === "paid").length} đoạn đã trả tiền. Chọn chế độ phân tích ({config.prices.summary} USDC) và ghi receipt lên chain:
+                {chunks.filter((c) => c.status === "paid").length} đoạn đã trả tiền. Sửa lời thoại nếu AI nghe nhầm, rồi phân tích cả phiên
+                và ghi receipt lên chain.
               </p>
-              <div style={{ display: "grid", gap: "8px", width: "100%" }}>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-wide"
-                  disabled={meeting.busy || meeting.phase === "summarizing"}
-                  onClick={() => meeting.finalize("meeting")}
-                >
-                  {meeting.phase === "summarizing"
-                    ? "Đang phân tích và ghi receipt…"
-                    : meeting.busy
-                      ? "Chờ các đoạn đang xử lý…"
-                      : `Họp nhóm: Tóm tắt & Việc cần làm (${config.prices.summary} USDC)`}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-wide"
-                  disabled={meeting.busy || meeting.phase === "summarizing"}
-                  onClick={() => meeting.finalize("interview")}
-                >
-                  {meeting.phase === "summarizing"
-                    ? "Đang phân tích và ghi receipt…"
-                    : `Phỏng vấn: Chấm điểm & Cảnh báo thiên vị (${config.prices.summary} USDC)`}
-                </button>
-              </div>
+              <fieldset className="field">
+                <legend>Phân tích theo kiểu</legend>
+                <Segmented name="mode-end" options={MODES} value={mode} onChange={setMode} disabled={meeting.phase === "summarizing"} />
+              </fieldset>
+              <button
+                type="button"
+                className="btn btn-primary btn-wide btn-tall"
+                disabled={meeting.busy || meeting.phase === "summarizing"}
+                onClick={() => meeting.finalize(mode)}
+              >
+                {meeting.phase === "summarizing"
+                  ? "Đang phân tích và ghi receipt…"
+                  : meeting.busy
+                    ? "Chờ các đoạn đang xử lý…"
+                    : `${mode === "interview" ? "Chấm điểm phỏng vấn" : "Tóm tắt cuộc họp"} và ghi receipt · ${config.prices.summary} USDC`}
+              </button>
               <button type="button" className="btn btn-quiet" onClick={meeting.reset} disabled={meeting.phase === "summarizing"}>
                 Bỏ phiên này
               </button>
@@ -311,11 +324,7 @@ export default function App() {
 }
 
 function Brand() {
-  const editChunk = (index, newText) => {
-    update(index, { text: newText, transcriptHash: textHash(newText) });
-  };
   return (
-    editChunk,
     <div className="brand">
       <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
         <path d="M6 21a10 10 0 0 1 20 0" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />

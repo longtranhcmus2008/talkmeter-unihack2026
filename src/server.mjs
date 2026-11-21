@@ -17,7 +17,7 @@ const GROQ_API_KEY = process.env.GROQ_API_KEY || "";
 const PRICE_TRANSCRIBE = process.env.PRICE_TRANSCRIBE || "0.02";
 const PRICE_SUMMARY = process.env.PRICE_SUMMARY || "0.05";
 const PRICE_GAS = process.env.PRICE_USDC || "0.001";
-const STT_PROMPT = process.env.STT_PROMPT || "Cuộc họp nhóm sinh viên Việt Nam bàn về dự án TalkMeter, phân công nhiệm vụ và thời hạn hoàn thành.";
+const STT_LANGUAGE = process.env.STT_LANGUAGE ?? "vi"; // "" lets Whisper detect the language (mixed Vietnamese/English meetings)
 const LLM_MODEL = process.env.LLM_MODEL || "openai/gpt-oss-120b";
 const RECEIPT_CONTRACT = process.env.RECEIPT_CONTRACT || "";
 
@@ -144,6 +144,7 @@ app.post("/api/transcribe", async (req, res) => {
     const ext = contentType.includes("wav") ? "wav" : contentType.includes("mp4") ? "mp4" : contentType.includes("ogg") ? "ogg" : "webm";
 
     console.log(`[STT] Nhận chunk: ${req.body.length} bytes, type: ${contentType}`);
+    // Under ~3 KB is near-silence: Whisper tends to invent words for it, so return empty text instead.
     if (req.body.length < 3000) {
       return res.json({ text: "", transcriptHash: textHash("") });
     }
@@ -152,11 +153,9 @@ app.post("/api/transcribe", async (req, res) => {
     const form = new FormData();
     form.append("file", new Blob([req.body], { type: cleanMime }), `chunk.${ext}`);
     form.append("model", "whisper-large-v3");
-    form.append("language", "vi");
+    if (STT_LANGUAGE) form.append("language", STT_LANGUAGE);
     form.append("temperature", "0");
     form.append("response_format", "json");
-
-
 
     const r = await fetch(`${GROQ_BASE}/audio/transcriptions`, {
       method: "POST",
@@ -197,7 +196,7 @@ app.post("/api/summary", async (req, res) => {
           "Bạn là Trợ lý Phỏng vấn (Interviewer Copilot) công bằng của TalkMeter. Chỉ trả về JSON hợp lệ, không bọc markdown.",
           "Đứng về phía nhà tuyển dụng để đánh giá khách quan, KHÔNG mớm câu trả lời cho ứng viên.",
           "Phân tích transcript cuộc phỏng vấn để: (1) tóm tắt năng lực ứng viên, (2) cảnh báo câu hỏi có nguy cơ thiên vị (tuổi tác, giới tính, vùng miền, đời tư) hoặc điểm cần lưu ý vào mảng decisions, (3) chấm điểm từng tiêu chí vào action_items với cấu trúc: task = Tên tiêu chí + Nhận xét ngắn, owner = Điểm số (ví dụ '8/10'), deadline = Gợi ý câu hỏi đào sâu tiếp theo, quote = Câu nói dẫn chứng trong transcript.",
-          'Khuôn JSON bắt buộc: {"summary":"3-5 câu đánh giá tổng quan ứng viên","decisions":["Cảnh báo thiên vị / Điểm lưu ý..."],"action_items":[{"task":"Tiêu chí: ...","owner":"8/10","deadline":"Câu hỏi đào sâu: ...","quote":"..."}]}',
+          'Khuôn JSON bắt buộc: {"summary":"3-5 câu đánh giá tổng quan ứng viên","decisions":["Cảnh báo thiên vị / Điểm lưu ý..."],"action_items":[{"task":"Tên tiêu chí: nhận xét ngắn","owner":"8/10","deadline":"Câu hỏi đào sâu tiếp theo","quote":"..."}]}',
         ].join("\n")
       : [
           "Bạn là thư ký cuộc họp của TalkMeter. Chỉ trả về một đối tượng JSON hợp lệ, không bọc markdown.",

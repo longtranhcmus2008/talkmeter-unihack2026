@@ -18,13 +18,16 @@ Sinh viên và nhóm nhỏ họp ít và không đều. Họ không muốn trả
 | Trần ngân sách mỗi phiên; mic tự tắt trước khi chạm trần, giữ sẵn phần cho bản tóm tắt | Chạy |
 | Thu mic, cắt đoạn 60 giây (hoặc 15 giây khi quay demo), mỗi đoạn là một file nghe lại được | Chạy |
 | Mỗi đoạn một lần thanh toán x402, có link Snowtrace riêng | Chạy (cần ví phiên có USDC test) |
-| Transcript tiếng Việt và tiếng Anh qua Whisper large-v3 (Groq) | Chạy (cần `GROQ_API_KEY`) |
+| Transcript tiếng Việt qua Whisper large-v3 (Groq); để trống `STT_LANGUAGE` thì tự nhận cả tiếng Anh | Chạy (cần `GROQ_API_KEY`) |
+| Sóng âm trực tiếp, mỗi vạch đỏ đánh dấu chỗ một đoạn bắt đầu được tính tiền | Chạy |
+| Sửa lời thoại khi AI nghe nhầm tên riêng; bản tóm tắt dùng bản đã sửa, receipt giữ bản AI nghe được nên vẫn kiểm chứng được | Chạy |
 | STT lỗi thì không trừ tiền, tự thử lại một lần, sau đó có nút thử lại | Chạy |
-| Tóm tắt, quyết định, việc cần làm kèm câu gốc: một lần trả 0.05 USDC | Chạy |
+| Hai kiểu phân tích, mỗi lần trả 0.05 USDC. **Họp nhóm**: tóm tắt, quyết định, việc cần làm kèm người phụ trách, hạn và câu gốc. **Phỏng vấn**: chấm điểm theo tiêu chí, gợi ý câu hỏi đào sâu, cảnh báo câu hỏi có nguy cơ thiên vị | Chạy |
+| Chép hoặc tải biên bản `.md` | Chạy |
 | Receipt on-chain cho cả phiên trong contract `ReceiptLog` | Chạy (cần ví operator và contract) |
 | Nút **Kiểm chứng trên chain**: trình duyệt tự tính lại hash và so với contract | Chạy |
 | Tải biên lai `.json` và kiểm chứng độc lập bằng `npm run verify-receipt` | Chạy |
-| Chấm điểm phỏng vấn, phỏng vấn thử, thanh toán theo giây, L1 riêng | Chưa làm |
+| Phỏng vấn thử với AI, thanh toán theo giây, L1 riêng | Chưa làm |
 | Đăng nhập, lưu lịch sử, phân biệt người nói, bot tự vào Meet/Zoom | Không nằm trong phạm vi |
 
 **Giới hạn cần nói thẳng:** server tin danh sách mã giao dịch do trình duyệt gửi lên. Receipt chứng minh bản ghi không bị sửa, nhưng chưa chứng minh server đã tự đối chiếu từng giao dịch. Bản đầy đủ sẽ đọc sự kiện `Transfer` của USDC trước khi ghi receipt.
@@ -42,7 +45,7 @@ Cần Node 22.9 trở lên và Chrome. Safari không ghi được `audio/webm`; 
 
 ```bash
 npm run setup                  # cài thư viện cho server và web
-cp .env.example .env.local     # rồi điền PAY_TO và GROQ_API_KEY
+cp .env.example .env.local     # Windows: copy .env.example .env.local; rồi điền PAY_TO và GROQ_API_KEY
 npm run new-wallet             # tạo ví operator, dán khóa vào OPERATOR_PRIVATE_KEY
 npm run deploy-receipt         # cần ít AVAX test trong ví operator; dán địa chỉ vào RECEIPT_CONTRACT
 npm run build && npm start     # mở http://localhost:4021
@@ -52,7 +55,7 @@ Khi đang sửa giao diện, chạy `npm run server` và `npm run client` ở ha
 
 Trong app: bấm vào ví ở góc trên, copy địa chỉ ví phiên và lấy USDC test tại [faucet Circle](https://faucet.circle.com) (chọn Avalanche Fuji). Ví phiên không cần AVAX.
 
-**Ba bước cho giám khảo:** (1) mở app, nạp 0.2 USDC test vào ví phiên; (2) tích ô đồng ý, chọn trần 0.10 và đoạn 15 giây, bấm Bắt đầu ghi và nói khoảng một phút; (3) bấm Tóm tắt và ghi receipt, rồi bấm Kiểm chứng trên chain.
+**Ba bước cho giám khảo:** (1) mở app, nạp 0.2 USDC test vào ví phiên; (2) tích ô đồng ý, chọn trần 0.10 và đoạn 15 giây, bấm Bắt đầu ghi và nói khoảng một phút; (3) bấm Dừng ghi, chọn Họp nhóm hoặc Phỏng vấn, bấm nút phân tích và ghi receipt, rồi bấm Kiểm chứng trên chain.
 
 ## Cách một đoạn được trả tiền
 
@@ -77,6 +80,8 @@ hi = keccak256(h(i-1) ‖ keccak256(transcript_i) ‖ txHash_i)
 
 `hn` được ghi vào `ReceiptLog.receiptOf(keccak256(sessionId))`. Chỉ hash lên chain, nội dung cuộc họp thì không. Ai giữ transcript và danh sách giao dịch đều tính lại được `hn`; sửa một chữ ở bất kỳ đoạn nào cũng làm hash lệch. `npm test` kiểm tra điều này và kiểm tra trình duyệt với server tính ra cùng một hash.
 
+Sửa lời thoại trong app không làm hỏng receipt: hash dùng đúng văn bản AI trả về lúc trả tiền, còn bản đã sửa chỉ dùng cho bản tóm tắt và nằm trong trường `edited` của biên lai `.json`.
+
 Receipt được ghi ngay trong route `/api/summary`, vốn đã có trả tiền, nên không ai gọi được để đốt gas của ví operator miễn phí.
 
 ## Cấu trúc
@@ -90,7 +95,7 @@ Receipt được ghi ngay trong route `/api/summary`, vốn đã có trả tiề
 | `contracts/ReceiptLog.sol` | Contract lưu một hash cho mỗi phiên |
 | `client/src/hooks/useMeeting.js` | Toàn bộ vòng lặp mic → x402 → transcript → tóm tắt → receipt |
 | `client/src/lib/x402Client.js` | Ví phiên trong trình duyệt và `fetch` tự trả tiền |
-| `client/src/components/` | Đồng hồ, thanh ngân sách, transcript, vé thanh toán, kết quả |
+| `client/src/components/` | Đồng hồ, thanh ngân sách, sóng âm, transcript, vé thanh toán, kết quả |
 | `scripts/` | Tạo ví, xem số dư, deploy và kiểm chứng receipt |
 | `docs/AUDIT.md` | Các lỗi đã tìm và sửa trong bản này |
 

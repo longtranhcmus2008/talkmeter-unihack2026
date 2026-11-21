@@ -78,3 +78,22 @@ Trạng thái: tất cả mục dưới đây **đã được sửa** trong bả
 **Chưa kiểm tra:** chưa chạy giao dịch thật trên Fuji (cần khóa ví và USDC test của nhóm), chưa gọi Groq thật (cần `GROQ_API_KEY`).
 
 **Giới hạn còn lại (chưa sửa, cần nói trong pitch):** server tin danh sách txHash do trình duyệt gửi lên. Bản đầy đủ nên đọc sự kiện `Transfer` của USDC để đối chiếu trước khi ghi receipt.
+
+## Lần rà thứ hai (sau khi nhóm thêm chế độ Phỏng vấn và sửa lời thoại)
+
+16. **Sửa lời thoại làm receipt báo "Không khớp"** (`client/src/hooks/useMeeting.js`)
+    - **Vấn đề:** `editChunk` ghi đè `text`, trong khi nút Kiểm chứng và biên lai `.json` tính hash từ `text`. Sửa một chữ là demo báo lệch với chain.
+    - **Sửa:** giữ nguyên `text` (bản AI nghe được, đã trả tiền) cho receipt; bản sửa nằm ở `edited` và chỉ dùng cho bản tóm tắt.
+
+17. **Đoạn code hỏng trong `Brand()`** (`client/src/App.jsx`)
+    - **Vấn đề:** hàm `editChunk` gọi `update` và `textHash` không tồn tại, trả về bằng toán tử dấu phẩy. Chạy được chỉ vì không ai gọi nó.
+    - **Sửa:** xóa.
+
+18. **Ép tiếng Việt cho mọi cuộc họp, `STT_PROMPT` không còn dùng** (`src/server.mjs`)
+    - **Vấn đề:** `language: "vi"` viết cứng làm hỏng cuộc họp tiếng Anh, còn `.env.example` vẫn hướng dẫn `STT_PROMPT` đã bỏ.
+    - **Sửa:** thay bằng `STT_LANGUAGE` (mặc định `vi`, để trống thì Whisper tự nhận).
+
+19. **Nhãn bảng sai ở chế độ Phỏng vấn trên điện thoại, nút chép im lặng khi lỗi** (`ResultPanel.jsx`)
+    - **Sửa:** nhãn theo chế độ (Tiêu chí, Điểm, Hỏi thêm); nút chép báo "Không chép được" khi trình duyệt chặn clipboard.
+
+20. **Tương phản** (`styles.css`): chữ đỏ nhỏ 4.05:1 và chữ trắng trên nút ghi 3.99:1, dưới mức 4.5:1 của WCAG AA. Đã đổi thành 6.0:1 và 5.45:1.

@@ -3,12 +3,12 @@ import { short } from "../lib/money";
 
 const VERIFY = {
   checking: "Đang đọc ReceiptLog trên chain…",
-  match: "Khớp. Hash tính lại từ transcript trên màn hình trùng với hash trên chain.",
+  match: "Khớp. Hash tính lại từ transcript gốc và các mã giao dịch trùng với hash trên chain.",
   mismatch: "Không khớp. Transcript hoặc danh sách giao dịch đã khác lúc ghi receipt.",
 };
 
 export default function ResultPanel({ meeting, contract, explorer }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState(null); // null | ok | fail
   const { result, receipt, receiptError, verification } = meeting;
   if (!result) return null;
 
@@ -38,17 +38,18 @@ export default function ResultPanel({ meeting, contract, explorer }) {
   };
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(formatMarkdown());
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(formatMarkdown());
+      setCopied("ok");
+    } catch {
+      setCopied("fail"); // clipboard blocked outside HTTPS/localhost; the .md download still works
+    }
+    setTimeout(() => setCopied(null), 2500);
   };
 
   const handleDownloadMd = () => {
-    const blob = new Blob([formatMarkdown()], { type: "text/markdown;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `talkmeter-${isInterview ? "interview" : "meeting"}-${Date.now()}.md`;
+    const url = URL.createObjectURL(new Blob([formatMarkdown()], { type: "text/markdown;charset=utf-8" }));
+    const a = Object.assign(document.createElement("a"), { href: url, download: `talkmeter-${isInterview ? "interview" : "meeting"}-${Date.now()}.md` });
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -56,42 +57,13 @@ export default function ResultPanel({ meeting, contract, explorer }) {
   return (
     <section className="panel result" aria-labelledby="result-title">
       <header className="panel-head">
-        <h2 id="result-title">{isInterview ? "Bảng đánh giá phỏng vấn (Interviewer Copilot)" : "Kết quả cuộc họp"}</h2>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <button
-            type="button"
-            onClick={handleCopy}
-            title="Sao chép kết quả vào bảng nhớ tạm"
-            aria-label="Sao chép kết quả vào bảng nhớ tạm"
-            style={{
-              width: "34px",
-              height: "34px",
-              borderRadius: "50%",
-              border: "1px solid rgba(255, 255, 255, 0.14)",
-              background: "rgba(255, 255, 255, 0.06)",
-              color: copied ? "#4ade80" : "inherit",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              cursor: "pointer",
-            }}
-          >
-            {copied ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="20 6 9 17 4 12" />
-              </svg>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-              </svg>
-            )}
+        <h2 id="result-title">{isInterview ? "Đánh giá phỏng vấn" : "Kết quả cuộc họp"}</h2>
+        <div className="result-tools">
+          <button type="button" className={`btn btn-quiet ${copied === "ok" ? "is-done" : ""}`} onClick={handleCopy} aria-live="polite">
+            {copied === "ok" ? "Đã chép" : copied === "fail" ? "Không chép được, hãy tải .md" : "Chép biên bản"}
           </button>
           <button type="button" className="btn btn-quiet" onClick={handleDownloadMd}>
             Tải biên bản .md
-          </button>
-          <button type="button" className="btn btn-quiet" onClick={meeting.reset}>
-            Bắt đầu phiên mới
           </button>
         </div>
       </header>
@@ -125,9 +97,9 @@ export default function ResultPanel({ meeting, contract, explorer }) {
               <tbody>
                 {result.action_items.map((a, i) => (
                   <tr key={i}>
-                    <td data-label="Việc">{a.task}</td>
-                    <td data-label="Người làm">{a.owner || <span className="muted">Chưa rõ</span>}</td>
-                    <td data-label="Hạn" className={isInterview ? "" : "nowrap"}>
+                    <td data-label={isInterview ? "Tiêu chí" : "Việc"}>{a.task}</td>
+                    <td data-label={isInterview ? "Điểm" : "Người làm"} className={isInterview ? "score" : ""}>{a.owner || <span className="muted">Chưa rõ</span>}</td>
+                    <td data-label={isInterview ? "Hỏi thêm" : "Hạn"} className={isInterview ? "" : "nowrap"}>
                       {a.deadline || <span className="muted">Chưa rõ</span>}
                     </td>
                     <td data-label="Câu gốc">{a.quote && <q>{a.quote}</q>}</td>

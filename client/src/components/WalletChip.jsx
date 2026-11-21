@@ -17,7 +17,13 @@ export default function WalletChip({ wallet, balance, network, locked, onNewWall
 
   return (
     <div className="wallet">
-      <button type="button" className="wallet-chip" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button
+        type="button"
+        className="wallet-chip"
+        aria-expanded={open}
+        aria-label={`Ví phiên ${short(wallet.address)}, số dư ${balance === null ? "đang tải" : `${balance.toFixed(4)} USDC`}`}
+        onClick={() => setOpen(!open)}
+      >
         <span className="wallet-addr">{short(wallet.address)}</span>
         <span className="wallet-bal">{balance === null ? "…" : balance.toFixed(4)} USDC</span>
       </button>

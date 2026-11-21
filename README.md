@@ -4,7 +4,9 @@
 
 Team1 Vietnam UniHack 2026, Topic 19.
 
-![Giao diện TalkMeter khi đang ghi (dữ liệu minh họa)](docs/screenshot.jpg)
+![Một phiên thật trên Fuji: 2 đoạn đã trả tiền, mic tự tắt ở trần 0.10 USDC](docs/screenshot.jpg)
+
+![Kết quả của phiên đó: tóm tắt, việc cần làm, receipt on-chain kiểm chứng Khớp](docs/screenshot-result.jpg)
 
 ## Dành cho ai
 
@@ -40,6 +42,7 @@ Một phiên chạy thật ngày 21/11/2026 bằng `npm run test-ai`: 3 đoạn 
 - Ba giao dịch x402 liên tiếp, mỗi giao dịch 0.02 USDC: [đoạn 1](https://testnet.snowtrace.io/tx/0xeee6c853f18e82e26b85af438cda94ea05b12c9ff4c7411b487f6c6512dc144b), [đoạn 2](https://testnet.snowtrace.io/tx/0xb867b704fed15f8962be12fe452d94e9feb24f3cd3f2f6c14dd291bd1d090054), [đoạn 3](https://testnet.snowtrace.io/tx/0xb432e9bca3632f05d69beacbf8a9857594aacab969b76f6e76272ac299ca1253)
 - Bản tóm tắt, 0.05 USDC: [giao dịch](https://testnet.snowtrace.io/tx/0x9d56da264fd2acecd690cbd2d943aefa037b6e43537754183f45656aef9a87ea)
 - Receipt của phiên đó: [giao dịch](https://testnet.snowtrace.io/tx/0xa3217c8174b2b1655e4d267977f26ddb4ff9fdcc660fe15de147d8cd6657457f), hash `0x1df9b4e5…7e8b1`. Tính lại từ transcript và mã giao dịch thì khớp với `receiptOf`.
+- Một phiên chạy trong trình duyệt (ảnh ở đầu trang), có sửa tên "DAT" thành "Đạt" trước khi tóm tắt: [đoạn 1](https://testnet.snowtrace.io/tx/0x39f075ff1e6b1791512caa2623d3efb4e5dfce772ae7faf8c955bbd6e620641b), [đoạn 2](https://testnet.snowtrace.io/tx/0xc47e4c9646da7828be2b081b2795e86bd4cc62f6f629f51bf2b9929891a6020e), [tóm tắt](https://testnet.snowtrace.io/tx/0x1a1ab53545e328ae4619e0e9db0baa45bf9b2d785f865745716113dbb12a8684), [receipt](https://testnet.snowtrace.io/tx/0x941bb2bada2a81c4ec30273c6a23914325c23818fe0936953f4d86e7519c1352). Kiểm chứng trên chain vẫn ra Khớp.
 - Gas đo được cho một lần settle x402: `86,144 gas × 0.001 gwei ≈ 0.000000086 AVAX`. Ghi receipt: `48,914 gas`.
 
 ## Chạy thử
@@ -130,3 +133,7 @@ Bản demo chạy trên Fuji với USDC thử nghiệm, không có giá trị th
 Ghi âm là xử lý dữ liệu cá nhân (Luật Bảo vệ dữ liệu cá nhân, hiệu lực 1/1/2026). TalkMeter xin đồng ý rõ ràng trước khi bật mic, báo rằng âm thanh được AI xử lý, không lưu file âm thanh trên server và chỉ đưa hash lên chain. Âm thanh vẫn được gửi tới API STT ở nước ngoài; hướng khắc phục là tự host model STT.
 
 Đây không phải tư vấn pháp lý.
+
+## Giấy phép
+
+MIT, xem [LICENSE](LICENSE).

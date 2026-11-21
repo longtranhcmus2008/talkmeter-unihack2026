@@ -315,7 +315,7 @@ function Brand() {
     update(index, { text: newText, transcriptHash: textHash(newText) });
   };
   return (
-    editchunk,
+    editChunk,
     <div className="brand">
       <svg viewBox="0 0 32 32" width="28" height="28" aria-hidden="true">
         <path d="M6 21a10 10 0 0 1 20 0" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
